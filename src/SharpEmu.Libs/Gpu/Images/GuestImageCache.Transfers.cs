@@ -725,15 +725,20 @@ public sealed unsafe partial class GuestImageCache
         }
 
         var range = image.Description.Data;
-        var download = _bufferCache.GetUtilityBuffer(GpuBufferUsage.Download);
-        if (!download.TryMap(range.Size, out var offset, Math.Max(image.Description.BytesPerBlock, 4u)))
+        var ring = _bufferCache.GetUtilityBuffer(GpuBufferUsage.Download);
+        GpuBuffer download = ring;
+        if (ring.TryMap(range.Size, out var offset, Math.Max(image.Description.BytesPerBlock, 4u)))
         {
-            throw SubmissionScheduler.Fatal($"The reusable download ring cannot map the image: address=0x{range.Address:X16} size=0x{range.Size:X}.");
+            ring.Commit();
+        }
+        else
+        {
+            download = new GpuBuffer(_device, _scheduler, GpuBufferUsage.Download, 0, GpuBuffer.AllFlags, range.Size);
         }
 
-        download.Commit();
         if (!_backing.TryReadBacking(range.Address, download.Mapped.Slice((int)offset, (int)range.Size)))
         {
+            if (download != ring) download.Dispose();
             return false;
         }
 
@@ -761,6 +766,8 @@ public sealed unsafe partial class GuestImageCache
                 throw SubmissionScheduler.Fatal($"The image readback could not be written to guest memory: address=0x{range.Address:X16} size=0x{range.Size:X}.");
             }
         });
+        // Completion actions wait for the priority readback before freeing spill buffers.
+        if (download != ring) _scheduler.QueueCompletionAction(download.Dispose);
         return true;
     }
 

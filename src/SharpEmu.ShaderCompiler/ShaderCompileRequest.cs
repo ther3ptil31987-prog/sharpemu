@@ -186,6 +186,7 @@ public sealed class ShaderCompileRequest
     public int RequiredVertexOutputCount { get; init; }
     public IReadOnlyList<ShaderVertexInput> VertexInputs { get; init; } = [];
     public uint PositionExportControl { get; init; }
+    public bool SupportsClipDistance { get; init; } = true;
     public ShaderClipSpaceTransform ClipSpace { get; init; }
 
     // The LDS the dispatch allocates (COMPUTE_PGM_RSRC2.LDS_SIZE), 0 when unknown.

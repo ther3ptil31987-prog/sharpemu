@@ -608,6 +608,7 @@ internal sealed class ShaderProgramCache
                     RequiredVertexOutputCount = options.RequiredVertexOutputCount,
                     VertexInputs = entry.VertexInputs,
                     PositionExportControl = info.PositionExportControl,
+                    SupportsClipDistance = _host.ClipDistanceEnabled,
                     ClipSpace = new ShaderClipSpaceTransform(
                         info.ClipSpace.Enabled,
                         info.ClipSpace.ScaleX,

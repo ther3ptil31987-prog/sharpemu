@@ -185,6 +185,7 @@ public static partial class Gen5SpirvTranslator
         private uint _layerOutput;
         private uint _viewportIndexOutput;
         private uint _clipDistanceCount;
+        private uint _invalidPositionClipDistance = uint.MaxValue;
         private uint _cullDistanceCount;
         private uint _vertexIndexInput;
         private uint _instanceIndexInput;
@@ -6588,6 +6589,20 @@ public static partial class Gen5SpirvTranslator
                 outputValue,
                 Load(_vec4Type, outputVariable));
             Store(outputVariable, outputValue);
+            if (export.Target == 12 && _invalidPositionClipDistance != uint.MaxValue)
+            {
+                var equal = _module.AddInstruction(
+                    SpirvOp.FOrdEqual,
+                    _module.TypeVector(_boolType, 4),
+                    outputValue,
+                    _module.ConstantNull(_vec4Type));
+                var invalid = _module.AddInstruction(SpirvOp.All, _boolType, equal);
+                // A zero position has an undefined perspective divide. Collapse its primitive
+                // to the remaining edge, as the guest's clipping-error cull does.
+                var distance = _module.AddInstruction(
+                    SpirvOp.Select, _floatType, invalid, Float(-1f), Float(0f));
+                StoreDistanceConditional(_clipDistanceOutput, _invalidPositionClipDistance, distance);
+            }
             return true;
         }
 
@@ -6694,6 +6709,14 @@ public static partial class Gen5SpirvTranslator
                         cullCount = Math.Max(cullCount, output.CullDistance + 1);
                     }
                 }
+            }
+
+            if (_request.SupportsClipDistance && clipCount + cullCount < 8 &&
+                _request.Program.Instructions.Any(static instruction =>
+                    instruction.Control is Gen5ExportControl { Target: 12, EnableMask: not 0 }))
+            {
+                // Use a separate plane so auxiliary position exports keep their own distances.
+                _invalidPositionClipDistance = clipCount++;
             }
 
             if (needPointSize)

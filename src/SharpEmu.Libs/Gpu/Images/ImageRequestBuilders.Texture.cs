@@ -300,6 +300,14 @@ public static partial class ImageRequestBuilders
         description.BytesPerBlock = blockBytes != 0 ? blockBytes : GuestPixelFormats.BytesPerElement(format);
         description.Samples = samples;
         description.TileMode = tile;
+        var metadataAddress = descriptor.MetadataAddress << 8;
+        if (!storage && type == GuestImageType.Color2D && samples == 1 && levels == 1 && tile == GuestTileMode.RenderTarget && descriptor.MetadataCompress &&
+            metadataAddress != 0 && metadataAddress < TrackerLayout.SpaceBytes)
+        {
+            description.Metadata.Kind = MetadataKind.Dcc;
+            description.Metadata.Range = new GuestSpan(metadataAddress, 0);
+        }
+
         if (samples > 1)
         {
             description.MipLayout[0] = new MipLevelLayout { Offset = 0, Size = size.Size, Pitch = pitch, Height = height };

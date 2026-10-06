@@ -421,13 +421,16 @@ public sealed partial class GuestImageCacheTests
         harness.Shutdown();
     }
 
-    [Fact]
-    public void NearCapacityReadback_ReusesTheSharedDownloadRing()
+    [Theory]
+    [InlineData(2047u)]
+    [InlineData(2048u)]
+    [InlineData(4096u)]
+    public void Readback_HandlesNearCapacityAndOversizedImages(uint height)
     {
         if (!GatePrerequisites.Ready(_vulkan)) return;
-        const uint width = 4096, height = 2047;
-        const ulong size = (ulong)width * height * 4;
-        using var harness = new CacheHarness(_vulkan, backingBytes: 40UL * 1024 * 1024);
+        const uint width = 4096;
+        var size = (ulong)width * height * 4;
+        using var harness = new CacheHarness(_vulkan, backingBytes: size + 8UL * 1024 * 1024);
         var address = harness.MapBacked(size, ReadWrite);
         var request = LinearRequest(address, size, Format.R8G8B8A8Unorm, GuestPixelFormat.Bits8_8_8_8UNorm, GuestImageType.Color2D, new Extent3D(width, height, 1), 1, 4, 1);
         ulong[] samples = [0, size / 2, size - 4];

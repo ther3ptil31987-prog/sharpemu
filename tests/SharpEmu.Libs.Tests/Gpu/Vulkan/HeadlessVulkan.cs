@@ -336,6 +336,9 @@ internal sealed unsafe class HeadlessVulkan : IDisposable
             SamplerAnisotropy = baseFeatures.SamplerAnisotropy,
             ShaderStorageImageExtendedFormats = baseFeatures.ShaderStorageImageExtendedFormats,
             ShaderInt64 = baseFeatures.ShaderInt64,
+            ShaderClipDistance = baseFeatures.ShaderClipDistance,
+            ShaderCullDistance = baseFeatures.ShaderCullDistance,
+            RobustBufferAccess = baseFeatures.RobustBufferAccess,
         };
         var priority = 1f;
         var queueInfo = new DeviceQueueCreateInfo

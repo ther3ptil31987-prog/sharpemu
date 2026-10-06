@@ -71,6 +71,7 @@ public static class VertexAttributeFormats
             56 => (Format.R8G8B8A8Unorm, 4u),
             50 => (Format.A2B10G10R10UnormPack32, 4u),
             51 => (Format.A2B10G10R10SNormPack32, 4u),
+            36 => (Format.B10G11R11UfloatPack32, 3u),
             29 => (Format.R16G16Sfloat, 2u),
             28 => (Format.R16G16Sint, 2u),
             27 => (Format.R16G16Uint, 2u),

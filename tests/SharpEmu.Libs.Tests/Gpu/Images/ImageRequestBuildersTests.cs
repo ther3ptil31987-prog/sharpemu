@@ -73,6 +73,24 @@ public sealed class ImageRequestBuildersTests : IClassFixture<HeadlessVulkanFixt
         Assert.Equal(ImageRole.Texture, comparison.Request.Role);
     }
 
+    [Theory]
+    [InlineData(GuestImageType.Color2D, 1u, true)]
+    [InlineData(GuestImageType.Color3D, 32u, false)]
+    [InlineData(GuestImageType.Color2DArray, 4u, false)]
+    public void CompressedTexture_CarriesDccMetadataOnlyForSingleLayer2D(GuestImageType type, uint layers, bool expected)
+    {
+        const ulong metadata = 0x1_2000_0000;
+        var words = RegisterWords.Texture(Base, GuestPixelFormat.Bits8_8_8_8UNorm, 32, 32, type, GuestTileMode.RenderTarget, layers: layers);
+        words[6] |= (1u << 21) | (uint)(((metadata >> 8) & 0xFF) << 24);
+        words[7] = (uint)(metadata >> 16);
+        var shape = Sampled2D with { Volume = type == GuestImageType.Color3D, Arrayed = type == GuestImageType.Color2DArray };
+
+        var description = ImageRequestBuilders.Texture(words, shape).Request.Description;
+
+        Assert.Equal(expected ? MetadataKind.Dcc : MetadataKind.None, description.Metadata.Kind);
+        Assert.Equal(expected ? metadata : 0UL, description.Metadata.Range.Address);
+    }
+
     private readonly HeadlessVulkan? _vulkan;
 
     public ImageRequestBuildersTests(HeadlessVulkanFixture fixture) => _vulkan = fixture.Vulkan;

@@ -126,6 +126,7 @@ internal static unsafe partial class VulkanVideoPresenter
         private bool _supportsDepthClipControl;
         private bool _supportsDepthClipEnable;
         private bool _supportsDepthBounds;
+        private bool _supportsShaderClipDistance;
         private bool _supportsFillRectangle;
         private RenderHostLimits _renderHostLimits;
         private IGuestBackedSpace _guestBacking = null!;
@@ -602,7 +603,7 @@ internal static unsafe partial class VulkanVideoPresenter
                     _vk.CmdClearColorImage(command, image.Backing.Handle, ImageLayout.TransferDstOptimal, &clearValue, 1, &vkRange);
                     if (!tracked)
                     {
-                        _bufferCache.FillBuffer(guestSlice, sliceSize, uint.MaxValue, false);
+                        _bufferCache.FillDccMetadata(guestSlice, sliceSize, uint.MaxValue);
                         if (RenderTrace.Enabled && RenderTrace.MetadataClear())
                         {
                             RenderTrace.Write(

@@ -143,11 +143,12 @@ public sealed unsafe partial class RenderHostDeviceTests : IClassFixture<Headles
 
     // One float2 position program and one solid red pixel program over empty resource plans.
     private sealed class FixedProgramProvider(IShaderPipelineHost host, ulong vertexAddress, bool pushData = false,
-        byte[]? interpolationShader = null, uint vertexCount = VertexCount) : IShaderPipelineProvider
+        byte[]? interpolationShader = null, uint vertexCount = VertexCount,
+        byte[]? vertexShader = null, uint vertexComponents = 2, uint vertexStride = VertexStride) : IShaderPipelineProvider
     {
         private const uint Float2Format = 64;
         private static readonly uint[] UserRegisters = [0, 1];
-        private readonly ShaderProgramInfo _vertex = EmptyProgram(ShaderStageKind.Vertex, 1, fetchComponents: 2, userDataRegisters: pushData ? UserRegisters : null, pushDataStart: 2);
+        private readonly ShaderProgramInfo _vertex = EmptyProgram(ShaderStageKind.Vertex, 1, fetchComponents: vertexComponents, userDataRegisters: pushData ? UserRegisters : null, pushDataStart: 2);
         private readonly ShaderProgramInfo _pixel = EmptyProgram(ShaderStageKind.Pixel, 2, userDataRegisters: pushData ? UserRegisters : null);
         private readonly ResourceSnapshot _snapshot = new() { UserData = pushData ? [0x11, 0x22] : [] };
         private ShaderProgram _vertexProgram;
@@ -179,7 +180,7 @@ public sealed unsafe partial class RenderHostDeviceTests : IClassFixture<Headles
             }
 
             _vertexProgram = new ShaderProgram(1, host.CreateShaderModule(new VulkanCompiledGuestShader(
-                CreatePositionVertexShader(interpolationShader is not null)), ShaderStage.Vertex, 1, 1));
+                vertexShader ?? CreatePositionVertexShader(interpolationShader is not null)), ShaderStage.Vertex, 1, 1));
             _pixelProgram = new ShaderProgram(2, host.CreateShaderModule(new VulkanCompiledGuestShader(
                 interpolationShader ?? SpirvFixedShaders.CreateSolidFragment(1f, 0f, 0f, 1f)), ShaderStage.Pixel, 2, 2));
         }
@@ -200,8 +201,8 @@ public sealed unsafe partial class RenderHostDeviceTests : IClassFixture<Headles
                 Pixel = _pixelProgram,
                 VertexInput = new VertexInputInfo
                 {
-                    Buffers = [new VertexInputBuffer(vertexAddress, VertexStride, vertexCount)],
-                    Attributes = [new VertexAttributeResource(new BufferDescriptorWords((uint)vertexAddress, (uint)(vertexAddress >> 32) | (VertexStride << 16), vertexCount, Float2Format << 12), 0, 2, 0, 0, 0, 0)],
+                    Buffers = [new VertexInputBuffer(vertexAddress, vertexStride, vertexCount)],
+                    Attributes = [new VertexAttributeResource(new BufferDescriptorWords((uint)vertexAddress, (uint)(vertexAddress >> 32) | (vertexStride << 16), vertexCount, (vertexComponents == 4 ? 77u : Float2Format) << 12), 0, (int)vertexComponents, 0, 0, 0, 0)],
                     Stage = new ShaderStageResources(_vertex, _snapshot),
                 },
                 PixelInput = new PixelInputInfo { InputCount = 0, Stage = new ShaderStageResources(_pixel, _snapshot) },
