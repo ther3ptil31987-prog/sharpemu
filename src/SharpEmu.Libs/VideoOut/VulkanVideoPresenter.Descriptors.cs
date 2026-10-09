@@ -110,6 +110,8 @@ internal static unsafe partial class VulkanVideoPresenter
             DepthCompare: image.DepthCompare,
             Atomic: image.Atomic);
 
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _tracedTextureBindings = new();
+
         // Render-state discovery for one shader image; the view is acquired later with the draw.
         private TextureResource ResolveImageBinding(ImageResource image, uint[] words, ShaderProgramInfo program, int index)
         {
@@ -127,11 +129,12 @@ internal static unsafe partial class VulkanVideoPresenter
             imageIdentifier = ImageRequestBuilders.ValidateTextureOwner(_imageCache, imageIdentifier, resolution);
             BindImage(imageIdentifier, storage);
             var descriptor = new TextureDescriptorWords(words);
-            if (ShouldTraceTextureBindings())
+            if (ShouldTraceTextureBindings() &&
+                (!_traceVolumeTextureBindingsOnly || image.Dimension == ImageDimension.Dim3D))
             {
                 var cached = _imageCache.GetImage(imageIdentifier);
                 var description = cached.Description;
-                Console.Error.WriteLine(
+                var line =
                     $"TextureBinding stage={program.Stage} hash=0x{program.Hash:X16} index={index} " +
                     $"address=0x{new TextureDescriptorWords(words).BaseAddress:X16} " +
                     $"descriptor={descriptor.BaseAddress:X16} size={descriptor.Width + 1}x{descriptor.Height + 1} " +
@@ -139,7 +142,14 @@ internal static unsafe partial class VulkanVideoPresenter
                     $"image=0x{description.Data.Address:X16} size=0x{description.Data.Size:X} " +
                     $"extent={description.Extent.Width}x{description.Extent.Height} pitch={description.Pitch} " +
                     $"guestFormat={(uint)description.GuestFormat} imageTile={(uint)description.TileMode} " +
-                    $"backing={cached.Backing.Extent.Width}x{cached.Backing.Extent.Height} format={cached.Backing.Format}");
+                    $"backing={cached.Backing.Extent.Width}x{cached.Backing.Extent.Height} format={cached.Backing.Format} " +
+                    $"depth={descriptor.Depth + 1} type={descriptor.Type} dcc={descriptor.MetadataCompress} " +
+                    $"metadata=0x{descriptor.MetadataAddress << 8:X} metaKind={description.Metadata.Kind} " +
+                    $"words={string.Join(',', words.Select(static word => word.ToString("X8")))}";
+                if (!_traceVolumeTextureBindingsOnly || _tracedTextureBindings.TryAdd(line, 0))
+                {
+                    Console.Error.WriteLine(line);
+                }
             }
             return new TextureResource
             {

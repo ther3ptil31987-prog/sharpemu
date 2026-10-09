@@ -442,6 +442,15 @@ public static partial class Gen5SpirvTranslator
                     break;
                 }
                 case "VRcpF32":
+                    result = EmitFloatResult(
+                        instruction,
+                        _module.AddInstruction(
+                            SpirvOp.FDiv,
+                            _floatType,
+                            Float(1),
+                            EmitFlushF32DenormToSignedZero(
+                                GetFloatSource(instruction, 0))));
+                    break;
                 case "VRcpIflagF32":
                     result = EmitFloatResult(
                         instruction,
@@ -454,7 +463,11 @@ public static partial class Gen5SpirvTranslator
                 case "VLogF32":
                     result = EmitFloatResult(
                         instruction,
-                        Ext(30, _floatType, GetFloatSource(instruction, 0)));
+                        Ext(
+                            30,
+                            _floatType,
+                            EmitFlushF32DenormToSignedZero(
+                                GetFloatSource(instruction, 0))));
                     break;
                 case "VLdexpF32":
                     result = EmitFloatResult(
@@ -468,12 +481,20 @@ public static partial class Gen5SpirvTranslator
                 case "VExpF32":
                     result = EmitFloatResult(
                         instruction,
-                        Ext(29, _floatType, GetFloatSource(instruction, 0)));
+                        Ext(
+                            29,
+                            _floatType,
+                            EmitFlushF32DenormToSignedZero(
+                                GetFloatSource(instruction, 0))));
                     break;
                 case "VRsqF32":
                     result = EmitFloatResult(
                         instruction,
-                        Ext(32, _floatType, GetFloatSource(instruction, 0)));
+                        Ext(
+                            32,
+                            _floatType,
+                            EmitFlushF32DenormToSignedZero(
+                                GetFloatSource(instruction, 0))));
                     break;
                 case "VRcpF16":
                     result = EmitFloat16Result(instruction, destination, _module.AddInstruction(SpirvOp.FDiv, _floatType, Float(1), GetFloat16Source(instruction, 0)));
@@ -542,7 +563,11 @@ public static partial class Gen5SpirvTranslator
                 case "VSqrtF32":
                     result = EmitFloatResult(
                         instruction,
-                        Ext(31, _floatType, GetFloatSource(instruction, 0)));
+                        Ext(
+                            31,
+                            _floatType,
+                            EmitFlushF32DenormToSignedZero(
+                                GetFloatSource(instruction, 0))));
                     break;
                 case "VSinF32":
                     result = EmitFloatResult(
@@ -553,7 +578,9 @@ public static partial class Gen5SpirvTranslator
                             _module.AddInstruction(
                                 SpirvOp.FMul,
                                 _floatType,
-                                GetFloatSource(instruction, 0),
+                                EmitTrigCycleF32(
+                                    GetFloatSource(instruction, 0),
+                                    preserveSignedZero: true),
                                 Float(MathF.Tau))));
                     break;
                 case "VCosF32":
@@ -565,7 +592,9 @@ public static partial class Gen5SpirvTranslator
                             _module.AddInstruction(
                                 SpirvOp.FMul,
                                 _floatType,
-                                GetFloatSource(instruction, 0),
+                                EmitTrigCycleF32(
+                                    GetFloatSource(instruction, 0),
+                                    preserveSignedZero: false),
                                 Float(MathF.Tau))));
                     break;
                 case "VAddF32":
