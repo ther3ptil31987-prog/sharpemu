@@ -2008,21 +2008,7 @@ public partial class MainWindow : Window
                         continue;
                     }
 
-                    long size = 0;
-                    try
-                    {
-                        size = new FileInfo(fullPath).Length;
-                    }
-                    catch (IOException exception)
-                    {
-                        Console.Error.WriteLine(
-                            $"[GUI][WARN] Could not inspect executable '{fullPath}': {exception.Message}");
-                    }
-
-                    var (title, titleId, version) = TryReadParamJson(fullPath);
-                    games.Add(new GameEntry(
-                        title ?? GameNameFor(fullPath), titleId, version, fullPath, size,
-                        FindCoverFor(fullPath), FindBackgroundFor(fullPath)));
+                    games.Add(CreateGameEntry(fullPath));
                 }
             }
             catch (Exception exception)
@@ -2033,7 +2019,39 @@ public partial class MainWindow : Window
         }
 
         games.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));
+        AddBundledDemo(games, excludedPaths);
         return games;
+    }
+
+    private static void AddBundledDemo(List<GameEntry> games, IReadOnlySet<string> excludedPaths)
+    {
+        var demo = BundledDemo.FindEboot(AppContext.BaseDirectory);
+        if (demo is null || excludedPaths.Contains(demo))
+        {
+            return;
+        }
+
+        games.RemoveAll(game => string.Equals(game.Path, demo, GameLibraryPath.Comparison));
+        games.Insert(0, CreateGameEntry(demo));
+    }
+
+    private static GameEntry CreateGameEntry(string fullPath)
+    {
+        long size = 0;
+        try
+        {
+            size = new FileInfo(fullPath).Length;
+        }
+        catch (IOException exception)
+        {
+            Console.Error.WriteLine(
+                $"[GUI][WARN] Could not inspect executable '{fullPath}': {exception.Message}");
+        }
+
+        var (title, titleId, version) = TryReadParamJson(fullPath);
+        return new GameEntry(
+            title ?? GameNameFor(fullPath), titleId, version, fullPath, size,
+            FindCoverFor(fullPath), FindBackgroundFor(fullPath));
     }
 
     /// <summary>
