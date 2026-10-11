@@ -181,7 +181,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
   </Target>
 
   <PropertyGroup>
-    <SharpEmuDemoTag>e3a6dd3</SharpEmuDemoTag>
+    <SharpEmuDemoTag>49e6b3b</SharpEmuDemoTag>
     <SharpEmuDemoFolderName>demo</SharpEmuDemoFolderName>
     <SharpEmuDemoCacheDir>$(BaseIntermediateOutputPath)sharpemu-demo/$(SharpEmuDemoTag)</SharpEmuDemoCacheDir>
     <SharpEmuDemoArchive>$(SharpEmuDemoCacheDir)/sharpemu-demo.zip</SharpEmuDemoArchive>
@@ -207,6 +207,8 @@ SPDX-License-Identifier: GPL-2.0-or-later
       DestinationFolder="$(SharpEmuDemoDir)"
       Condition="'$(SharpEmuDemoTag)' != '' And '$(_SharpEmuDemoCurrent)' != 'true' And Exists('$(SharpEmuDemoArchive)')"
       ContinueOnError="WarnAndContinue" />
+    <!-- Older demo releases include preview music; keep the bundled demo silent. -->
+    <Delete Files="$(SharpEmuDemoDir)sce_sys/snd0.at9" />
     <PropertyGroup>
       <SharpEmuDemoComplete Condition="Exists('$(SharpEmuDemoDir)eboot.bin') And Exists('$(SharpEmuDemoDir)sce_sys/param.json') And Exists('$(SharpEmuDemoDir)sce_sys/icon0.png') And Exists('$(SharpEmuDemoDir)sce_sys/pic0.png')">true</SharpEmuDemoComplete>
     </PropertyGroup>
@@ -231,6 +233,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
       SourceFiles="@(_SharpEmuDemoFiles)"
       DestinationFiles="@(_SharpEmuDemoFiles->'$(OutDir)$(SharpEmuDemoFolderName)/%(RecursiveDir)%(Filename)%(Extension)')"
       SkipUnchangedFiles="true" />
+    <Delete Files="$(OutDir)$(SharpEmuDemoFolderName)/sce_sys/snd0.at9" />
   </Target>
 
   <Target Name="PublishSharpEmuDemo" AfterTargets="Publish" DependsOnTargets="FetchSharpEmuDemo">
@@ -245,6 +248,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
       SourceFiles="@(_SharpEmuDemoFiles)"
       DestinationFiles="@(_SharpEmuDemoFiles->'$(PublishDir)$(SharpEmuDemoFolderName)/%(RecursiveDir)%(Filename)%(Extension)')"
       SkipUnchangedFiles="true" />
+    <Delete Files="$(PublishDir)$(SharpEmuDemoFolderName)/sce_sys/snd0.at9" />
   </Target>
 
 </Project>

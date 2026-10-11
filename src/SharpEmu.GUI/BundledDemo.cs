@@ -15,7 +15,6 @@ internal static class BundledDemo
         Path.Combine("sce_sys", "param.json"),
         Path.Combine("sce_sys", "icon0.png"),
         Path.Combine("sce_sys", "pic0.png"),
-        Path.Combine("sce_sys", "snd0.at9"),
     ];
 
     internal static string? FindEboot(string baseDirectory)
