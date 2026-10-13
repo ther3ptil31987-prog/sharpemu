@@ -67,6 +67,8 @@ public sealed class GuestSpaceOwner : IDisposable
     // Reads through a view that covers the whole range without any lock; false otherwise.
     public bool TryReadSingleView(ulong address, Span<byte> data) => _views.TryReadSingleView(address, data);
 
+    public bool TryWriteSingleView(ulong address, ReadOnlySpan<byte> data) => _views.TryWriteSingleView(address, data);
+
     public object AliasSnapshot => _views.AliasSnapshot;
 
     public bool TryEnterAliasAccess() => _views.TryEnterAliasAccess();

@@ -198,6 +198,14 @@ public sealed class GuestPageTracker
             if (Volatile.Read(ref _regions[index]) is { } region)
             {
                 tracked = true;
+                if (region.IsCpuDirtyThroughout(offset, bytes))
+                {
+                    remaining -= bytes;
+                    offset = 0;
+                    index++;
+                    continue;
+                }
+
                 using (region.Lock.Hold())
                 {
                     if (region.IsModified(WriteOrigin.Gpu, offset, bytes))

@@ -138,6 +138,58 @@ public sealed partial class GuestImageCacheTests
         }
     }
 
+    [Theory]
+    [InlineData(Format.R16G16Sfloat, GuestPixelFormat.Bits16_16Float, 4u, 0x3c00bc00u)]
+    [InlineData(Format.R16G16B16A16Sfloat, GuestPixelFormat.Bits16_16_16_16Float, 8u, 0x3c00bc00u)]
+    [InlineData(Format.R16G16B16A16Sfloat, GuestPixelFormat.Bits16_16_16_16Float, 8u, 0x80000001u)]
+    [InlineData(Format.R32G32Uint, GuestPixelFormat.Bits32_32UInt, 8u, 0xdeadbeefu)]
+    [InlineData(Format.R32G32B32A32Uint, GuestPixelFormat.Bits32_32_32_32UInt, 16u, 0xdeadbeefu)]
+    public void FullColorBufferFillPreservesRawWords(Format format, GuestPixelFormat guestFormat, uint bytesPerTexel, uint word)
+    {
+        if (!GatePrerequisites.Ready(_vulkan)) return;
+        using var harness = new CacheHarness(_vulkan);
+        var address = harness.MapBacked(0x10000, ReadWrite);
+        var request = LinearRequest(address, bytesPerTexel, format, guestFormat, GuestImageType.Color2D,
+            new Extent3D(1, 1, 1), 1, bytesPerTexel, 1);
+        var image = harness.Find(ref request);
+        Assert.True(harness.Worker.Run(() => harness.Images.TryClearImageFromBuffer(address, bytesPerTexel, word)));
+        Assert.Equal(Bytes(Enumerable.Repeat(word, (int)bytesPerTexel / 4).ToArray()), harness.ReadImageBytes(harness.Image(image)));
+        Assert.True(harness.Image(image).IsGpuModified);
+        harness.Shutdown();
+    }
+
+    [Fact]
+    public void HalfFloatNaNBufferFillFallsBackWithoutChangingImageOwnership()
+    {
+        if (!GatePrerequisites.Ready(_vulkan)) return;
+        using var harness = new CacheHarness(_vulkan);
+        var address = harness.MapBacked(0x10000, ReadWrite);
+        var request = LinearRequest(address, 8, Format.R16G16B16A16Sfloat, GuestPixelFormat.Bits16_16_16_16Float,
+            GuestImageType.Color2D, new Extent3D(1, 1, 1), 1, 8, 1);
+        var image = harness.Find(ref request);
+        Assert.True(harness.Image(image).IsCpuDirty);
+        Assert.False(harness.Worker.Run(() => harness.Images.TryClearImageFromBuffer(address, 8, 0x7e003c00u)));
+        Assert.True(harness.Image(image).IsCpuDirty);
+        Assert.False(harness.Image(image).IsGpuModified);
+        harness.Shutdown();
+    }
+
+    [Fact]
+    public void HalfFloatBufferFillStillRequiresAnExactRange()
+    {
+        if (!GatePrerequisites.Ready(_vulkan)) return;
+        using var harness = new CacheHarness(_vulkan);
+        var address = harness.MapBacked(0x10000, ReadWrite);
+        var request = LinearRequest(address, 16, Format.R16G16B16A16Sfloat, GuestPixelFormat.Bits16_16_16_16Float,
+            GuestImageType.Color2D, new Extent3D(2, 1, 1), 1, 8, 1);
+        var image = harness.Find(ref request);
+        Assert.False(harness.Worker.Run(() => harness.Images.TryClearImageFromBuffer(address + 8, 8, 0x3c00bc00u)));
+        Assert.False(harness.Worker.Run(() => harness.Images.TryClearImageFromBuffer(address, 20, 0x3c00bc00u)));
+        Assert.True(harness.Image(image).IsCpuDirty);
+        Assert.False(harness.Image(image).IsGpuModified);
+        harness.Shutdown();
+    }
+
     [Fact]
     public void PartialPage_BufferAndImageShareOneTrackerPage()
     {

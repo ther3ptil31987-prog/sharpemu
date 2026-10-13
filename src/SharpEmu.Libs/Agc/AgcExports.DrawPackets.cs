@@ -46,16 +46,7 @@ public static partial class AgcExports
         uint perInstanceObjectIdSupport)
     {
         if (commandBufferAddress == 0 ||
-            !TryAllocateCommandDwords(ctx, commandBufferAddress, 3, out var commandAddress) ||
-            !TryWriteUInt32(ctx, commandAddress, Pm4(3, ItSetUconfigRegIndex, 0)) ||
-            !TryWriteUInt32(ctx, commandAddress + 4, 0x2000_0000u | VgtIndexType) ||
-            !TryWriteUInt32(
-                ctx,
-                commandAddress + 8,
-                0x400u |
-                (indexSize & 0x3u) |
-                ((cachePolicy & 0x3u) << 6) |
-                ((perInstanceObjectIdSupport & 0x1u) << 14)))
+            !TryEmitCommandDwords(ctx, commandBufferAddress, out var commandAddress, Pm4(3, ItSetUconfigRegIndex, 0), 0x2000_0000u | VgtIndexType, 0x400u | (indexSize & 0x3u) | ((cachePolicy & 0x3u) << 6) | ((perInstanceObjectIdSupport & 0x1u) << 14)))
         {
             return ReturnPointer(ctx, 0);
         }
@@ -77,9 +68,7 @@ public static partial class AgcExports
         var commandBufferAddress = ctx[CpuRegister.Rdi];
         var indexCount = (uint)ctx[CpuRegister.Rsi];
         if (commandBufferAddress == 0 ||
-            !TryAllocateCommandDwords(ctx, commandBufferAddress, 2, out var commandAddress) ||
-            !TryWriteUInt32(ctx, commandAddress, Pm4(2, ItNop, RIndexCount)) ||
-            !TryWriteUInt32(ctx, commandAddress + 4, indexCount))
+            !TryEmitCommandDwords(ctx, commandBufferAddress, out var commandAddress, Pm4(2, ItNop, RIndexCount), indexCount))
         {
             return ReturnPointer(ctx, 0);
         }
@@ -112,9 +101,7 @@ public static partial class AgcExports
             return ReturnPointer(ctx, 0);
         }
 
-        if (!TryAllocateCommandDwords(ctx, commandBufferAddress, 2, out var commandAddress) ||
-            !TryWriteUInt32(ctx, commandAddress, Pm4(2, ItNumInstances, 0)) ||
-            !TryWriteUInt32(ctx, commandAddress + 4, instanceCount))
+        if (!TryEmitCommandDwords(ctx, commandBufferAddress, out var commandAddress, Pm4(2, ItNumInstances, 0), instanceCount))
         {
             return ReturnPointer(ctx, 0);
         }
@@ -140,12 +127,7 @@ public static partial class AgcExports
             return ReturnPointer(ctx, 0);
         }
 
-        if (!TryAllocateCommandDwords(ctx, commandBufferAddress, 5, out var baseCommand) ||
-            !TryWriteUInt32(ctx, baseCommand, Pm4(3, ItIndexBase, 0)) ||
-            !TryWriteUInt32(ctx, baseCommand + 4, (uint)indexAddress) ||
-            !TryWriteUInt32(ctx, baseCommand + 8, (uint)(indexAddress >> 32)) ||
-            !TryWriteUInt32(ctx, baseCommand + 12, Pm4(2, ItIndexBufferSize, 0)) ||
-            !TryWriteUInt32(ctx, baseCommand + 16, indexCount))
+        if (!TryEmitCommandDwords(ctx, commandBufferAddress, out var baseCommand, Pm4(3, ItIndexBase, 0), (uint)indexAddress, (uint)(indexAddress >> 32), Pm4(2, ItIndexBufferSize, 0), indexCount))
         {
             return ReturnPointer(ctx, 0);
         }
@@ -155,13 +137,7 @@ public static partial class AgcExports
         // former five-dword packet omitted both the real base and the count
         // field, so every call made by Unity looked like a zero-count draw to
         // the submitted-command parser and the complete scene was discarded.
-        if (!TryAllocateCommandDwords(ctx, commandBufferAddress, 6, out var drawCommand) ||
-            !TryWriteUInt32(ctx, drawCommand, Pm4(6, ItDrawIndex2, 0)) ||
-            !TryWriteUInt32(ctx, drawCommand + 4, indexCount) ||
-            !TryWriteUInt32(ctx, drawCommand + 8, (uint)indexAddress) ||
-            !TryWriteUInt32(ctx, drawCommand + 12, (uint)(indexAddress >> 32)) ||
-            !TryWriteUInt32(ctx, drawCommand + 16, indexCount) ||
-            !TryWriteUInt32(ctx, drawCommand + 20, 0))
+        if (!TryEmitCommandDwords(ctx, commandBufferAddress, out var drawCommand, Pm4(6, ItDrawIndex2, 0), indexCount, (uint)indexAddress, (uint)(indexAddress >> 32), indexCount, 0))
         {
             return ReturnPointer(ctx, 0);
         }
@@ -204,12 +180,7 @@ public static partial class AgcExports
             ? 2u
             : ((modifierBits >> 3) & 0x20u) | 2u;
 
-        if (!TryAllocateCommandDwords(ctx, commandBufferAddress, 5, out var drawCommand) ||
-            !TryWriteUInt32(ctx, drawCommand, Pm4(5, ItDrawIndirect, 0)) ||
-            !TryWriteUInt32(ctx, drawCommand + 4, dataOffset) ||
-            !TryWriteUInt32(ctx, drawCommand + 8, firstVertexRegister) ||
-            !TryWriteUInt32(ctx, drawCommand + 12, firstInstanceRegister) ||
-            !TryWriteUInt32(ctx, drawCommand + 16, drawInitiator))
+        if (!TryEmitCommandDwords(ctx, commandBufferAddress, out var drawCommand, Pm4(5, ItDrawIndirect, 0), dataOffset, firstVertexRegister, firstInstanceRegister, drawInitiator))
         {
             var rejects = Interlocked.Increment(ref _indirectDrawEmitRejectCount);
             if (rejects <= 8 || rejects % 250 == 0)
@@ -244,14 +215,7 @@ public static partial class AgcExports
             return ReturnPointer(ctx, 0);
         }
 
-        if (!TryAllocateCommandDwords(ctx, commandBufferAddress, 7, out var commandAddress) ||
-            !TryWriteUInt32(ctx, commandAddress, Pm4(7, ItNop, RDrawIndexAuto)) ||
-            !TryWriteUInt32(ctx, commandAddress + 4, indexCount) ||
-            !TryWriteUInt32(ctx, commandAddress + 8, 0) ||
-            !TryWriteUInt32(ctx, commandAddress + 12, 0) ||
-            !TryWriteUInt32(ctx, commandAddress + 16, 0) ||
-            !TryWriteUInt32(ctx, commandAddress + 20, 0) ||
-            !TryWriteUInt32(ctx, commandAddress + 24, 0))
+        if (!TryEmitCommandDwords(ctx, commandBufferAddress, out var commandAddress, Pm4(7, ItNop, RDrawIndexAuto), indexCount, 0, 0, 0, 0, 0))
         {
             return ReturnPointer(ctx, 0);
         }
@@ -390,12 +354,7 @@ public static partial class AgcExports
             return ReturnPointer(ctx, 0);
         }
 
-        if (!TryAllocateCommandDwords(ctx, commandBufferAddress, 5, out var commandAddress) ||
-            !TryWriteUInt32(ctx, commandAddress, Pm4(3, ItIndexBase, 0)) ||
-            !TryWriteUInt32(ctx, commandAddress + 4, (uint)(indexBufferAddress & 0xFFFF_FFFFUL)) ||
-            !TryWriteUInt32(ctx, commandAddress + 8, (uint)(indexBufferAddress >> 32)) ||
-            !TryWriteUInt32(ctx, commandAddress + 12, Pm4(2, ItIndexBufferSize, 0)) ||
-            !TryWriteUInt32(ctx, commandAddress + 16, indexCount))
+        if (!TryEmitCommandDwords(ctx, commandBufferAddress, out var commandAddress, Pm4(3, ItIndexBase, 0), (uint)(indexBufferAddress & 0xFFFF_FFFFUL), (uint)(indexBufferAddress >> 32), Pm4(2, ItIndexBufferSize, 0), indexCount))
         {
             return ReturnPointer(ctx, 0);
         }
@@ -424,12 +383,7 @@ public static partial class AgcExports
         var drawInitiator = (drawModifier & (1UL << 32)) != 0
             ? 0u
             : ((uint)drawModifier >> 3) & 0x20u;
-        if (!TryAllocateCommandDwords(ctx, commandBufferAddress, 5, out var commandAddress) ||
-            !TryWriteUInt32(ctx, commandAddress, Pm4(5, ItDrawIndexOffset2, 0)) ||
-            !TryWriteUInt32(ctx, commandAddress + 4, Math.Max(indexCount, 1u)) ||
-            !TryWriteUInt32(ctx, commandAddress + 8, indexOffset) ||
-            !TryWriteUInt32(ctx, commandAddress + 12, indexCount) ||
-            !TryWriteUInt32(ctx, commandAddress + 16, drawInitiator))
+        if (!TryEmitCommandDwords(ctx, commandBufferAddress, out var commandAddress, Pm4(5, ItDrawIndexOffset2, 0), Math.Max(indexCount, 1u), indexOffset, indexCount, drawInitiator))
         {
             return ReturnPointer(ctx, 0);
         }

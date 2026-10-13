@@ -5,6 +5,7 @@ using System.Buffers.Binary;
 using SharpEmu.Libs.Gpu.Buffers;
 using SharpEmu.Libs.Tests.Gpu.Images;
 using SharpEmu.ShaderCompiler;
+using SharpEmu.ShaderCompiler.Ir;
 using SharpEmu.ShaderCompiler.Resources;
 using SharpEmu.ShaderCompiler.Vulkan;
 using Xunit;
@@ -12,16 +13,18 @@ using static SharpEmu.ShaderCompiler.Tests.Resources.ResourceTestProgram;
 
 namespace SharpEmu.Libs.Tests.Gpu.Vulkan;
 
-public sealed class Wave64HalfMaskDeviceTests(HeadlessVulkanFixture fixture) : IClassFixture<HeadlessVulkanFixture>
+public class Wave64HalfMaskDeviceTests(HeadlessVulkanFixture fixture) : IClassFixture<HeadlessVulkanFixture>
 {
-    private const uint Vcc = 106;
-    private const uint Exec = 126;
-    private static readonly Gen5Operand AllLanes = Gen5Operand.Source(193);
+    protected virtual bool HostSubgroup32 => false;
+
+    protected const uint Vcc = 106;
+    protected const uint Exec = 126;
+    protected static readonly Gen5Operand AllLanes = Gen5Operand.Source(193);
 
     private readonly List<Gen5ShaderInstruction> _instructions = [];
     private uint _pc;
 
-    private uint Add(Gen5ShaderInstruction instruction)
+    protected uint Add(Gen5ShaderInstruction instruction)
     {
         var pc = _pc;
         _instructions.Add(instruction with { Pc = pc });
@@ -29,46 +32,60 @@ public sealed class Wave64HalfMaskDeviceTests(HeadlessVulkanFixture fixture) : I
         return pc;
     }
 
-    private void Point(uint branchPc, uint targetPc)
+    protected void Point(uint branchPc, uint targetPc)
     {
         var index = _instructions.FindIndex(instruction => instruction.Pc == branchPc);
         var offset = (short)(((int)targetPc - (int)branchPc - 4) / 4);
         _instructions[index] = _instructions[index] with { Words = [unchecked((uint)(ushort)offset)] };
     }
 
-    private void Lane()
+    protected void Lane(uint rowShift = 3)
     {
-        Add(Vop2(0, "VLshlrevB32", 2, Operand(3), Gen5Operand.Vector(1)));
+        Add(Vop2(0, "VLshlrevB32", 2, Operand(rowShift), Gen5Operand.Vector(1)));
         Add(Vop2(0, "VAddI32", 2, Gen5Operand.Vector(0), Gen5Operand.Vector(2)));
     }
 
-    private uint CompareTo(string opcode, uint destination, Gen5Operand left, Gen5Operand right) =>
+    protected uint CompareTo(string opcode, uint destination, Gen5Operand left, Gen5Operand right) =>
         Add(new Gen5ShaderInstruction(0, Gen5ShaderEncoding.Vop3, opcode, [0u, 0u], [left, right], [Gen5Operand.Scalar(destination)],
             new Gen5Vop3Control(0, 0, 0, false, 0, destination)));
 
-    private uint[] Run(uint localDataShareDwords = 0)
+    protected uint[] Run(uint localDataShareDwords = 0, uint sizeX = 8, uint sizeY = 8, bool? laneLocal = null)
     {
+        var threads = sizeX * sizeY;
         Add(Vop2(0, "VLshlrevB32", 5, Operand(2), Gen5Operand.Vector(2)));
         Add(BufferAccess(0, "BufferStoreDword", 4, vectorData: 4, offsetEnabled: true, vectorAddress: 5));
         Add(EndProgram(0));
-        var (plan, resources, layout) = Prepare(Program([.. _instructions]));
+        var program = Program([.. _instructions]);
+        if (laneLocal is { } expected)
+        {
+            Assert.Equal(expected, Gen5WaveLaneLocalAnalysis.IsLaneLocal(program, new HashSet<uint>(), out var reason));
+            Assert.True(expected || reason.Length != 0);
+        }
+
+        var (plan, resources, layout) = Prepare(program);
         var request = new ShaderCompileRequest(plan, resources, layout)
         {
-            LocalSizeX = 8, LocalSizeY = 8, ThreadCountX = 8, ThreadCountY = 8, WaveSize = 64,
-            LocalDataShareDwords = localDataShareDwords,
+            LocalSizeX = sizeX, LocalSizeY = sizeY, ThreadCountX = sizeX, ThreadCountY = sizeY, WaveSize = 64,
+            LocalDataShareDwords = localDataShareDwords, HostComputeSubgroup32 = HostSubgroup32,
         };
         Assert.True(Gen5SpirvTranslator.TryCompileProgram(request, out var shader, out var error), error);
+        if (HostSubgroup32 && laneLocal is { } oneLanePerInvocation)
+        {
+            var halfWavesEnabled = Environment.GetEnvironmentVariable("SHARPEMU_WAVE64_LANE_LOCAL") == "1";
+            Assert.Equal(oneLanePerInvocation && halfWavesEnabled ? sizeX : (threads + 63) / 64 * 32, LocalSizeX(shader.Spirv));
+        }
+
         Assert.NotNull(fixture.Vulkan);
         using var harness = new ImageTestHarness(fixture.Vulkan);
         using var runner = new LayoutComputeRunner(harness, request, shader.Spirv);
-        var output = runner.CreateBuffer(256);
+        var output = runner.CreateBuffer(threads * 4);
         var registers = new uint[256];
-        registers[6] = 256;
+        registers[6] = threads * 4;
         harness.Run(() => runner.Dispatch(registers,
             new Dictionary<DescriptorBindingKind, GpuBuffer[]> { [DescriptorBindingKind.Buffers] = [output] }, 1));
-        var bytes = runner.ReadBack(output, 0, 256);
+        var bytes = runner.ReadBack(output, 0, threads * 4);
         harness.AssertNoValidationMessages();
-        var lanes = new uint[64];
+        var lanes = new uint[threads];
         for (var lane = 0; lane < lanes.Length; lane++)
         {
             lanes[lane] = BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(lane * sizeof(uint)));
@@ -88,6 +105,25 @@ public sealed class Wave64HalfMaskDeviceTests(HeadlessVulkanFixture fixture) : I
     }
 
     [Fact]
+    public void ANarrowedRegionKeepsTheValuesItsInactiveLanesShowLater()
+    {
+        if (!Ready()) return;
+        Lane();
+        Add(MoveVector(0, 4, 7));
+        Add(Sop1(0, "SMovB64", 20, Gen5Operand.Scalar(Exec)));
+        Add(Vopc(0, "VCmpxLeU32", Operand(40), 2));
+        Add(Vop2(0, "VAddU32", 3, Operand(64), Gen5Operand.Vector(2)));
+        Add(Vop2(0, "VAddU32", 4, Operand(1), Gen5Operand.Vector(3)));
+        Add(Sop1(0, "SMovB64", Exec, Gen5Operand.Scalar(20)));
+
+        var lanes = Run();
+        for (uint lane = 0; lane < 64; lane++)
+        {
+            Assert.Equal(lane >= 40 ? lane + 65 : 7u, lanes[lane]);
+        }
+    }
+
+    [Fact]
     public void InitialExecContainsEveryLane()
     {
         if (!Ready()) return;
@@ -96,7 +132,27 @@ public sealed class Wave64HalfMaskDeviceTests(HeadlessVulkanFixture fixture) : I
         Assert.All(Run(), x => Assert.Equal(uint.MaxValue, x));
     }
 
-    private bool Ready() => GatePrerequisites.Ready(fixture.Vulkan, shaderInt64: true);
+    private static uint LocalSizeX(byte[] spirv)
+    {
+        const uint ExecutionMode = 16;
+        const uint LocalSize = 17;
+        for (var offset = 5 * sizeof(uint); offset < spirv.Length;)
+        {
+            var word = BinaryPrimitives.ReadUInt32LittleEndian(spirv.AsSpan(offset));
+            var count = (int)(word >> 16);
+            if ((word & 0xFFFF) == ExecutionMode &&
+                BinaryPrimitives.ReadUInt32LittleEndian(spirv.AsSpan(offset + 2 * sizeof(uint))) == LocalSize)
+            {
+                return BinaryPrimitives.ReadUInt32LittleEndian(spirv.AsSpan(offset + 3 * sizeof(uint)));
+            }
+
+            offset += Math.Max(count, 1) * sizeof(uint);
+        }
+
+        throw new InvalidOperationException("no LocalSize execution mode");
+    }
+
+    protected bool Ready() => GatePrerequisites.Ready(fixture.Vulkan, shaderInt64: true);
 
     [Fact]
     public void MasksAcrossTheHalfBoundary_StayExactPerLaneAndWhenCounted()
@@ -271,7 +327,7 @@ public sealed class Wave64HalfMaskDeviceTests(HeadlessVulkanFixture fixture) : I
         var (plan, resources, layout) = Prepare(program, userDataCount: 12);
         var request = new ShaderCompileRequest(plan, resources, layout)
         {
-            LocalSizeX = 64, WaveSize = 64, EnableExecGuardElision = false,
+            LocalSizeX = 64, WaveSize = 64, EnableExecGuardElision = false, HostComputeSubgroup32 = HostSubgroup32,
             ComputeSystemRegisters = new Gen5ComputeSystemRegisters(12, null, null, null),
         };
         Assert.True(Gen5SpirvTranslator.TryCompileProgram(request, out var shader, out var error), error);

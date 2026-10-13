@@ -17,6 +17,12 @@ public sealed partial class RenderExecutor
     private bool TryResolveDrawTargets(RegisterBanks banks, in DrawCall draw, ref DrawState state)
     {
         using var profileScope = RenderPhaseProfile.MeasureDetail(RenderPhaseProfile.Phase.DrawTargetResolution);
+        if (Diagnostics.DccWriterTrace.Enabled)
+        {
+            Diagnostics.DccWriterTrace.CurrentKind = "draw";
+            Diagnostics.DccWriterTrace.CurrentProgram = 0;
+        }
+
         var context = banks.Context;
         if (TryResolveMultisampleColor(context))
         {

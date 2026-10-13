@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using SharpEmu.HLE;
+using SharpEmu.HLE.FileSystem;
 using SharpEmu.HLE.GpuMemory;
 using SharpEmu.Libs.Agc;
 using SharpEmu.Libs.Ampr;
@@ -97,7 +98,7 @@ public static partial class KernelMemoryCompatExports
     private const int KernelStatStBirthtimOffset = 104;
 
     private static readonly object _fdGate = new();
-    private static readonly Dictionary<int, FileStream> _openFiles = new();
+    private static readonly Dictionary<int, Stream> _openFiles = new();
     private static readonly HashSet<int> _randomDeviceDescriptors = new();
     private static readonly Dictionary<int, HostMovieBridge.BinkGuestCompletionShim>
         _binkGuestCompletionShims = new();
@@ -1480,6 +1481,11 @@ public static partial class KernelMemoryCompatExports
         }
         try
         {
+            if (access == FileAccess.Read && HostMovieBridge.IsSelfDecodedMovie(hostPath))
+            {
+                App0Archive.Extract(hostPath);
+            }
+
             if (HostMovieBridge.ShouldSkipGuestMovie(hostPath))
             {
                 LogOpenTrace(
@@ -1506,9 +1512,9 @@ public static partial class KernelMemoryCompatExports
             }
 
             var wantsDirectory = (flags & O_DIRECTORY) != 0;
-            if (wantsDirectory || Directory.Exists(hostPath))
+            if (wantsDirectory || HostDirectoryExists(hostPath))
             {
-                if (!Directory.Exists(hostPath))
+                if (!HostDirectoryExists(hostPath))
                 {
                     LogOpenTrace($"_open miss path='{guestPath}' host='{hostPath}' flags=0x{flags:X8} directory=1");
                     return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
@@ -1536,8 +1542,18 @@ public static partial class KernelMemoryCompatExports
                 return (int)OrbisGen2Result.ORBIS_GEN2_OK;
             }
 
-            EnsureOpenParentDirectoryExists(guestPath, hostPath, flags);
-            var stream = new FileStream(hostPath, mode, access, GuestFileShare);
+            Stream stream;
+            if (access == FileAccess.Read && !IsMutatingOpen(flags) && !File.Exists(hostPath) &&
+                App0Archive.OpenRead(hostPath) is { } archived)
+            {
+                stream = archived;
+            }
+            else
+            {
+                EnsureOpenParentDirectoryExists(guestPath, hostPath, flags);
+                stream = new FileStream(hostPath, mode, access, GuestFileShare);
+            }
+
             if ((flags & O_APPEND) != 0)
             {
                 stream.Seek(0, SeekOrigin.End);
@@ -2268,7 +2284,7 @@ public static partial class KernelMemoryCompatExports
             return (int)OrbisGen2Result.ORBIS_GEN2_OK;
         }
 
-        FileStream? stream;
+        Stream? stream;
         var notifyBinkClose = false;
         string? observedBinkPath = null;
         lock (_fdGate)
@@ -2367,7 +2383,7 @@ public static partial class KernelMemoryCompatExports
             return (int)OrbisGen2Result.ORBIS_GEN2_OK;
         }
 
-        FileStream? stream;
+        Stream? stream;
         HostMovieBridge.BinkGuestCompletionShim completionShim = default;
         var useBinkCompletionShim = false;
         lock (_fdGate)
@@ -2385,7 +2401,7 @@ public static partial class KernelMemoryCompatExports
         // still owns its Bink file descriptor. Return EOF so the guest closes
         // that descriptor and proceeds to the next movie instead of waiting
         // forever on a stale native decoder.
-        if (HostMovieBridge.ShouldForceGuestMovieEof(stream.Name))
+        if (HostMovieBridge.ShouldForceGuestMovieEof(OpenFileName(stream)))
         {
             ctx[CpuRegister.Rax] = 0;
             return (int)OrbisGen2Result.ORBIS_GEN2_OK;
@@ -2411,7 +2427,7 @@ public static partial class KernelMemoryCompatExports
             // logic can't race ahead of what's still on screen.
             if (completionShim.Patch(positionBefore, buffer.AsSpan(0, read)))
             {
-                HostMovieBridge.WaitForHostPlaybackToFinish(stream.Name);
+                HostMovieBridge.WaitForHostPlaybackToFinish(OpenFileName(stream));
             }
         }
         if (read > 0 && !ctx.Memory.TryWrite(bufferAddress, buffer.AsSpan(0, read)))
@@ -2431,7 +2447,7 @@ public static partial class KernelMemoryCompatExports
 
         LogIoTrace(
             "read",
-            stream.Name,
+            OpenFileName(stream),
             $"fd={fd} req={requested} read={read} pos={positionBefore}->{positionAfter} preview='{PreviewIoBytes(buffer, read, 64)}' hex={PreviewIoHex(buffer, read, 32)} guest_tail={PreviewGuestHex(ctx, bufferAddress + (ulong)Math.Max(read, 0), 32)}");
 
         ctx[CpuRegister.Rax] = unchecked((ulong)read);
@@ -2539,7 +2555,7 @@ public static partial class KernelMemoryCompatExports
     {
         position = -1;
 
-        FileStream? stream;
+        Stream? stream;
         lock (_fdGate)
         {
             _openFiles.TryGetValue(fd, out stream);
@@ -2564,7 +2580,7 @@ public static partial class KernelMemoryCompatExports
                 origin = SeekOrigin.End;
                 break;
             default:
-                LogIoTrace("lseek", stream.Name, $"fd={fd} offset={offset} whence={whence} result=invalid_whence");
+                LogIoTrace("lseek", OpenFileName(stream), $"fd={fd} offset={offset} whence={whence} result=invalid_whence");
                 return OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
         }
 
@@ -2574,16 +2590,16 @@ public static partial class KernelMemoryCompatExports
         }
         catch (IOException ex)
         {
-            LogIoTrace("lseek", stream.Name, $"fd={fd} offset={offset} whence={whence} result=io_error ex={ex.Message}");
+            LogIoTrace("lseek", OpenFileName(stream), $"fd={fd} offset={offset} whence={whence} result=io_error ex={ex.Message}");
             return OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
         }
         catch (ArgumentException ex)
         {
-            LogIoTrace("lseek", stream.Name, $"fd={fd} offset={offset} whence={whence} result=invalid ex={ex.Message}");
+            LogIoTrace("lseek", OpenFileName(stream), $"fd={fd} offset={offset} whence={whence} result=invalid ex={ex.Message}");
             return OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
         }
 
-        LogIoTrace("lseek", stream.Name, $"fd={fd} offset={offset} whence={whence} pos={position}");
+        LogIoTrace("lseek", OpenFileName(stream), $"fd={fd} offset={offset} whence={whence} pos={position}");
         return OrbisGen2Result.ORBIS_GEN2_OK;
     }
 
@@ -2643,7 +2659,7 @@ public static partial class KernelMemoryCompatExports
             return (int)OrbisGen2Result.ORBIS_GEN2_OK;
         }
 
-        FileStream? stream;
+        Stream? stream;
         lock (_fdGate)
         {
             _openFiles.TryGetValue(fd, out stream);
@@ -6966,7 +6982,7 @@ public static partial class KernelMemoryCompatExports
             }
             else if (_openFiles.TryGetValue(fd, out var stream))
             {
-                hostPath = stream.Name;
+                hostPath = OpenFileName(stream);
             }
         }
 
@@ -6985,7 +7001,9 @@ public static partial class KernelMemoryCompatExports
             {
                 try
                 {
-                    size = new FileInfo(hostPath!).Length;
+                    size = !File.Exists(hostPath) && App0Archive.TryGetFile(hostPath!, out var archivedSize)
+                        ? (long)archivedSize
+                        : new FileInfo(hostPath!).Length;
                 }
                 catch (IOException)
                 {
@@ -7005,8 +7023,8 @@ public static partial class KernelMemoryCompatExports
 
     private static bool TryWriteHostPathStat(CpuContext ctx, ulong statAddress, string hostPath)
     {
-        var isDirectory = Directory.Exists(hostPath);
-        if (!isDirectory && !File.Exists(hostPath))
+        var isDirectory = HostDirectoryExists(hostPath);
+        if (!isDirectory && !HostFileExists(hostPath))
         {
             return false;
         }
@@ -7062,7 +7080,13 @@ public static partial class KernelMemoryCompatExports
                 return true;
             }
 
-            if (!new DirectoryInfo(cachePath).Exists)
+            if (App0Archive.TryGetFile(cachePath, out size))
+            {
+                _aprFileSizeCache.TryAdd(cachePath, size);
+                return true;
+            }
+
+            if (!new DirectoryInfo(cachePath).Exists && !App0Archive.IsDirectory(cachePath))
             {
                 if (IsUnderApp0(cachePath))
                 {
@@ -7084,16 +7108,9 @@ public static partial class KernelMemoryCompatExports
 
     private static bool TryWriteHostPathStat(CpuContext ctx, ulong statAddress, string hostPath, bool isDirectory)
     {
-        if (isDirectory)
+        if (isDirectory ? !Directory.Exists(hostPath) : !File.Exists(hostPath))
         {
-            if (!Directory.Exists(hostPath))
-            {
-                return false;
-            }
-        }
-        else if (!File.Exists(hostPath))
-        {
-            return false;
+            return TryWriteArchivePathStat(ctx, statAddress, hostPath, isDirectory);
         }
 
         try
@@ -7109,6 +7126,33 @@ public static partial class KernelMemoryCompatExports
             return false;
         }
     }
+
+    // A path under an app0 mounted from an archive that is not on disk takes its times from the archive.
+    private static bool TryWriteArchivePathStat(CpuContext ctx, ulong statAddress, string hostPath, bool isDirectory)
+    {
+        if (!App0Archive.TryResolve(hostPath, out var archive, out var node) ||
+            (isDirectory ? !archive.IsDirectory(node) : !archive.IsFile(node)))
+        {
+            return false;
+        }
+
+        var size = isDirectory ? 65536L : (long)archive.GetFileSize(node);
+        var archiveTime = File.GetLastWriteTimeUtc(archive.Path);
+        return TryWriteKernelStat(ctx, statAddress, isDirectory, size, archiveTime, archiveTime, archiveTime, hostPath);
+    }
+
+    private static bool HostFileExists(string hostPath) =>
+        File.Exists(hostPath) || App0Archive.TryGetFile(hostPath, out _);
+
+    private static bool HostDirectoryExists(string hostPath) =>
+        Directory.Exists(hostPath) || App0Archive.IsDirectory(hostPath);
+
+    private static string OpenFileName(Stream stream) => stream switch
+    {
+        FileStream file => file.Name,
+        ZArchiveFileStream archived => archived.Name,
+        _ => string.Empty,
+    };
 
     private static bool TryWriteKernelStat(
         CpuContext ctx,
@@ -7217,7 +7261,7 @@ public static partial class KernelMemoryCompatExports
             var record = payload.AsSpan(written, recordLength);
             BinaryPrimitives.WriteUInt32LittleEndian(record, ComputeDirectoryEntryHash(entryBytes.AsSpan(0, nameLength)));
             BinaryPrimitives.WriteUInt16LittleEndian(record[4..], unchecked((ushort)recordLength));
-            record[6] = Directory.Exists(Path.Combine(directory.Path, entryName)) ? (byte)4 : (byte)8;
+            record[6] = HostDirectoryExists(Path.Combine(directory.Path, entryName)) ? (byte)4 : (byte)8;
             record[7] = unchecked((byte)nameLength);
             entryBytes.AsSpan(0, nameLength).CopyTo(record[8..]);
             written += recordLength;
@@ -7240,9 +7284,14 @@ public static partial class KernelMemoryCompatExports
         // host dir previously returned EOF on the first call (rax=0), which
         // sent GTA's fiWriteAsyncDataWorker down a path that treated the fd as
         // a pointer (AV at 0xB1 on /download0/cloudcache/).
-        var children = Directory.EnumerateFileSystemEntries(hostPath)
-            .Select(Path.GetFileName)
+        // Under an app0 mounted from an archive the listing is the union of the cache folder and the archive.
+        var onDisk = Directory.Exists(hostPath)
+            ? Directory.EnumerateFileSystemEntries(hostPath).Select(Path.GetFileName)
+            : [];
+        var children = onDisk
+            .Concat(App0Archive.List(hostPath).Select(static entry => entry.Name))
             .Where(static name => !string.IsNullOrEmpty(name))
+            .Distinct(HostFsPath.Comparer)
             .OrderBy(static name => name, StringComparer.OrdinalIgnoreCase);
 
         return new[] { ".", ".." }.Concat(children).ToArray()!;
@@ -7897,7 +7946,7 @@ public static partial class KernelMemoryCompatExports
         }
 
         var hostPath = ResolveGuestPath(guestPath);
-        if (File.Exists(hostPath) || Directory.Exists(hostPath))
+        if (HostFileExists(hostPath) || HostDirectoryExists(hostPath))
         {
             ctx[CpuRegister.Rax] = 0;
             return (int)OrbisGen2Result.ORBIS_GEN2_OK;

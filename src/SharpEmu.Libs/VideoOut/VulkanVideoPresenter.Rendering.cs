@@ -12,6 +12,7 @@ using SharpEmu.Libs.Gpu.GpuCommands.Registers;
 using SharpEmu.Libs.Gpu.Images;
 using SharpEmu.Libs.Gpu.Pipelines;
 using SharpEmu.Libs.Gpu.Rendering;
+using SharpEmu.Libs.Gpu.Vulkan;
 using SharpEmu.Libs.Gpu.Scheduling;
 using SharpEmu.Libs.Gpu.Vulkan;
 using Silk.NET.Core;
@@ -280,14 +281,21 @@ internal static unsafe partial class VulkanVideoPresenter
             _boundGraphicsPipeline = null;
         }
 
+        // The acquisition below reads the attachment back into its result and keeps no reference to it,
+        // so one render-thread instance serves every draw.
+        private ColorAttachment? _colorAttachmentScratch;
+
         ColorAttachmentAcquisition IRenderHost.AcquireColorAttachment(in ColorTargetState target)
         {
-            var attachment = new ColorAttachment
-            {
-                ImageIdentifier = target.Image,
-                Request = target.Resolution.Request,
-                Resolution = target.Resolution,
-            };
+            var attachment = _colorAttachmentScratch ??= new ColorAttachment();
+            attachment.ImageIdentifier = target.Image;
+            attachment.Request = target.Resolution.Request;
+            attachment.Resolution = target.Resolution;
+            attachment.Image = null!;
+            attachment.View = default;
+            attachment.Layout = default;
+            attachment.Clear = false;
+            attachment.ClearValue = default;
             AcquireColorAttachment(attachment);
             return new ColorAttachmentAcquisition(
                 attachment.ImageIdentifier,
@@ -373,6 +381,11 @@ internal static unsafe partial class VulkanVideoPresenter
         {
             if (bindings.IsEmpty) return;
             var command = BeginBatchedGuestCommands();
+            if (VertexBuffersAlreadyBound(command, bindings))
+            {
+                return;
+            }
+
             var buffers = stackalloc VkBuffer[bindings.Length];
             var offsets = stackalloc ulong[bindings.Length];
             for (var index = 0; index < bindings.Length; index++)
@@ -384,8 +397,14 @@ internal static unsafe partial class VulkanVideoPresenter
             _vk.CmdBindVertexBuffers(command, 0, (uint)bindings.Length, buffers, offsets);
         }
 
-        public void BindIndexBuffer(BufferBinding binding, IndexType type) =>
-            _vk.CmdBindIndexBuffer(BeginBatchedGuestCommands(), new VkBuffer(binding.Handle), binding.Offset, type);
+        public void BindIndexBuffer(BufferBinding binding, IndexType type)
+        {
+            var command = BeginBatchedGuestCommands();
+            if (!IndexBufferAlreadyBound(command, new VkBuffer(binding.Handle), binding.Offset, type))
+            {
+                _vk.CmdBindIndexBuffer(command, new VkBuffer(binding.Handle), binding.Offset, type);
+            }
+        }
 
         public IResourcePreparation BeginPreparation()
         {
@@ -399,6 +418,11 @@ internal static unsafe partial class VulkanVideoPresenter
 
             if (_batchDrawCount >= (_renderingActive ? DrawsPerBatchInRenderPass : DrawsPerBatch))
             {
+                if (GpuSyncProfile.Enabled)
+                {
+                    GpuSyncProfile.CountBatchFlush();
+                }
+
                 EndRendering();
                 FlushBatchedGuestCommands();
             }
@@ -644,29 +668,80 @@ internal static unsafe partial class VulkanVideoPresenter
             _vk.CmdClearDepthStencilImage(command, image.Backing.Handle, ImageLayout.TransferDstOptimal, &value, 1, &vkRange);
         }
 
+        // The dynamic state the last guest draw set, and where it holds: the command buffer and its
+        // tick (a new command buffer starts without state), and no other graphics pipeline since.
+        private DynamicDrawState _lastDynamicState;
+        private CommandBuffer _lastDynamicStateBuffer;
+        private ulong _lastDynamicStateTick;
+        private long _lastDynamicStateEpoch = -1;
+
         public void SetDynamicState(in DynamicDrawState state)
         {
             using var profileScope = RenderPhaseProfile.MeasureDetail(RenderPhaseProfile.Phase.DrawDynamicStateRecording);
             var command = BeginBatchedGuestCommands();
-            var viewport = new Viewport(state.ViewportX, state.ViewportY, state.ViewportWidth, state.ViewportHeight, state.ViewportMinDepth, state.ViewportMaxDepth);
-            _vk.CmdSetViewport(command, 0, 1, &viewport);
-            var scissor = new Rect2D(
-                new Offset2D(state.Scissor.Left, state.Scissor.Top),
-                new Extent2D((uint)(state.Scissor.Right - state.Scissor.Left), (uint)(state.Scissor.Bottom - state.Scissor.Top)));
-            _vk.CmdSetScissor(command, 0, 1, &scissor);
-            _vk.CmdSetLineWidth(command, state.LineWidth);
-            var blendConstants = stackalloc float[4] { state.BlendRed, state.BlendGreen, state.BlendBlue, state.BlendAlpha };
-            _vk.CmdSetBlendConstants(command, blendConstants);
-            _vk.CmdSetDepthTestEnable(command, state.DepthTestEnabled);
-            _vk.CmdSetDepthWriteEnable(command, state.DepthWriteEnabled);
-            _vk.CmdSetDepthCompareOp(command, state.DepthCompare);
-            _vk.CmdSetDepthBiasEnable(command, state.DepthBiasEnabled);
-            if (state.DepthBiasEnabled)
+            // Every guest pipeline keeps these states dynamic, so they persist across its binds;
+            // only what changed since the last draw in this command buffer is set again.
+            var known = command.Handle == _lastDynamicStateBuffer.Handle && _scheduler.CurrentTick == _lastDynamicStateTick &&
+                GraphicsDynamicStateEpoch.Value == _lastDynamicStateEpoch;
+            ref readonly var last = ref _lastDynamicState;
+            if (!known || state.ViewportX != last.ViewportX || state.ViewportY != last.ViewportY ||
+                state.ViewportWidth != last.ViewportWidth || state.ViewportHeight != last.ViewportHeight ||
+                state.ViewportMinDepth != last.ViewportMinDepth || state.ViewportMaxDepth != last.ViewportMaxDepth)
+            {
+                var viewport = new Viewport(state.ViewportX, state.ViewportY, state.ViewportWidth, state.ViewportHeight, state.ViewportMinDepth, state.ViewportMaxDepth);
+                _vk.CmdSetViewport(command, 0, 1, &viewport);
+            }
+
+            if (!known || state.Scissor != last.Scissor)
+            {
+                var scissor = new Rect2D(
+                    new Offset2D(state.Scissor.Left, state.Scissor.Top),
+                    new Extent2D((uint)(state.Scissor.Right - state.Scissor.Left), (uint)(state.Scissor.Bottom - state.Scissor.Top)));
+                _vk.CmdSetScissor(command, 0, 1, &scissor);
+            }
+
+            if (!known || state.LineWidth != last.LineWidth)
+            {
+                _vk.CmdSetLineWidth(command, state.LineWidth);
+            }
+
+            if (!known || state.BlendRed != last.BlendRed || state.BlendGreen != last.BlendGreen ||
+                state.BlendBlue != last.BlendBlue || state.BlendAlpha != last.BlendAlpha)
+            {
+                var blendConstants = stackalloc float[4] { state.BlendRed, state.BlendGreen, state.BlendBlue, state.BlendAlpha };
+                _vk.CmdSetBlendConstants(command, blendConstants);
+            }
+
+            if (!known || state.DepthTestEnabled != last.DepthTestEnabled)
+            {
+                _vk.CmdSetDepthTestEnable(command, state.DepthTestEnabled);
+            }
+
+            if (!known || state.DepthWriteEnabled != last.DepthWriteEnabled)
+            {
+                _vk.CmdSetDepthWriteEnable(command, state.DepthWriteEnabled);
+            }
+
+            if (!known || state.DepthCompare != last.DepthCompare)
+            {
+                _vk.CmdSetDepthCompareOp(command, state.DepthCompare);
+            }
+
+            if (!known || state.DepthBiasEnabled != last.DepthBiasEnabled)
+            {
+                _vk.CmdSetDepthBiasEnable(command, state.DepthBiasEnabled);
+            }
+
+            // The factors only matter while the bias is on; they are set when it turns on or changes.
+            if (state.DepthBiasEnabled && (!known || !last.DepthBiasEnabled ||
+                state.DepthBiasConstantFactor != last.DepthBiasConstantFactor || state.DepthBiasClamp != last.DepthBiasClamp ||
+                state.DepthBiasSlopeFactor != last.DepthBiasSlopeFactor))
             {
                 _vk.CmdSetDepthBias(command, state.DepthBiasConstantFactor, _supportsDepthBiasClamp ? state.DepthBiasClamp : 0f, state.DepthBiasSlopeFactor);
             }
 
-            if (state.StencilTestEnabled)
+            if (state.StencilTestEnabled && (!known || !last.StencilTestEnabled ||
+                state.FrontStencil != last.FrontStencil || state.BackStencil != last.BackStencil))
             {
                 _vk.CmdSetStencilCompareMask(command, StencilFaceFlags.FaceFrontBit, state.FrontStencil.CompareMask);
                 _vk.CmdSetStencilCompareMask(command, StencilFaceFlags.FaceBackBit, state.BackStencil.CompareMask);
@@ -686,6 +761,11 @@ internal static unsafe partial class VulkanVideoPresenter
 
                 colorWriteEnable.CmdSetColorWriteEnable(command, state.ColorWriteCount, enables);
             }
+
+            _lastDynamicState = state;
+            _lastDynamicStateBuffer = command;
+            _lastDynamicStateTick = _scheduler.CurrentTick;
+            _lastDynamicStateEpoch = GraphicsDynamicStateEpoch.Value;
         }
 
 
@@ -787,12 +867,17 @@ internal static unsafe partial class VulkanVideoPresenter
             }
 
             EndRendering();
-            var command = BeginBatchedGuestCommands();
-            _commandBuffer = command;
-            if (DeferGlobalBarriers)
+            if (DeferGlobalBarriers && BatchBarriers)
             {
                 // A guest cache flush inside this scope may be deferred to its end; this keeps
                 // everything recorded before the scope ordered before its draws either way.
+                RequestGuestMemoryBarrier(GlobalMemoryBarrier);
+            }
+
+            var command = BeginBatchedGuestCommands();
+            _commandBuffer = command;
+            if (DeferGlobalBarriers && !BatchBarriers)
+            {
                 RecordGlobalBarrier(command);
             }
 
@@ -863,6 +948,11 @@ internal static unsafe partial class VulkanVideoPresenter
             };
             _vk.CmdBeginRendering(command, &rendering);
             _renderingScopesBegun++;
+            if (GpuSyncProfile.Enabled)
+            {
+                GpuSyncProfile.CountRenderingScope();
+            }
+
             _renderingActive = true;
             _renderingState = state;
         }
@@ -912,19 +1002,19 @@ internal static unsafe partial class VulkanVideoPresenter
         public void BindPipeline(PipelineBindPoint bindPoint, in PipelineHandle pipeline)
         {
             var entry = RequirePipelineEntry(in pipeline);
-            var command = BeginBatchedGuestCommands();
+            var command = BeginBatchedGuestStateCommands();
             if (bindPoint == PipelineBindPoint.Graphics)
             {
                 _boundGraphicsPipeline = entry;
                 if (!entry.RectangleList)
                 {
-                    _vk.CmdBindPipeline(command, bindPoint, entry.Pipeline);
+                    BindPipelineShadowed(command, bindPoint, entry.Pipeline);
                 }
 
                 return;
             }
 
-            _vk.CmdBindPipeline(command, bindPoint, entry.Pipeline);
+            BindPipelineShadowed(command, bindPoint, entry.Pipeline);
             _profileComputePipeline = entry.Id;
         }
 
@@ -948,7 +1038,7 @@ internal static unsafe partial class VulkanVideoPresenter
                 variant = CreateRenderPipeline(entry.Description!, strip ? PrimitiveTopology.TriangleStrip : PrimitiveTopology.TriangleList, entry.Layout);
             }
 
-            _vk.CmdBindPipeline(command, PipelineBindPoint.Graphics, variant);
+            BindPipelineShadowed(command, PipelineBindPoint.Graphics, variant);
         }
 
         private void BindNativeRectangleList(RenderPipelineEntry entry, CommandBuffer command)
@@ -959,7 +1049,7 @@ internal static unsafe partial class VulkanVideoPresenter
                     entry.Layout, PolygonMode.FillRectangleNV);
             }
 
-            _vk.CmdBindPipeline(command, PipelineBindPoint.Graphics, entry.RectangleVariant);
+            BindPipelineShadowed(command, PipelineBindPoint.Graphics, entry.RectangleVariant);
         }
 
         // Rectangle2D consumes three vertices and fills their projected bounding box.
@@ -1075,9 +1165,24 @@ internal static unsafe partial class VulkanVideoPresenter
             return true;
         }
 
+        private static readonly bool BatchBarriers =
+            Environment.GetEnvironmentVariable("SHARPEMU_BATCH_BARRIERS") != "0";
+
+        private static readonly MemoryBarrierRequest GlobalMemoryBarrier = new(
+            PipelineStageFlags.AllCommandsBit,
+            PipelineStageFlags.AllCommandsBit,
+            AccessFlags.MemoryWriteBit,
+            AccessFlags.MemoryReadBit | AccessFlags.MemoryWriteBit);
+
         private void RecordMemoryBarrier(PipelineStageFlags sourceStages, PipelineStageFlags destinationStages, AccessFlags sourceAccess, AccessFlags destinationAccess)
         {
             EndRendering();
+            if (BatchBarriers)
+            {
+                RequestGuestMemoryBarrier(new MemoryBarrierRequest(sourceStages, destinationStages, sourceAccess, destinationAccess));
+                return;
+            }
+
             var command = BeginBatchedGuestCommands();
             var barrier = new MemoryBarrier2
             {
@@ -1194,13 +1299,23 @@ internal static unsafe partial class VulkanVideoPresenter
 
         public bool TryFillDccMetadata(ulong address, ulong size, uint fillValue)
         {
-            if (!_imageCache.OverlapsDccMetadata(address, size))
+            if (!_imageCache.OverlapsDccMetadata(address, size) && !IsMetadataShapedFill(address, size, fillValue))
             {
                 return false;
             }
 
             _bufferCache.FillDccMetadata(address, size, fillValue);
             return true;
+        }
+
+        private bool IsMetadataShapedFill(ulong address, ulong size, uint fillValue)
+        {
+            const ulong metadataBlockSize = 0x1000;
+            const ulong maxMetadataFill = 0x100000;
+            return address != 0 && size != 0 && size <= maxMetadataFill &&
+                   address % metadataBlockSize == 0 && size % metadataBlockSize == 0 &&
+                   fillValue == (fillValue & 0xFF) * 0x01010101u &&
+                   !_imageCache.QueryRegion(address, size).ImageBytes;
         }
 
         public bool TryCopyWordsOnHost(ulong destination, ulong source, ulong sourceWords, ulong words) =>

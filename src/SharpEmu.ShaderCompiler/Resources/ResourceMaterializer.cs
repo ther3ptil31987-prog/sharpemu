@@ -1050,6 +1050,10 @@ public static class ResourceMaterializer
             }
 
             var storage = baseImage.ResourceClass == ImageResourceClass.Storage;
+            image = image with
+            {
+                MipStatistics = RecordMipStatistics && plan.Stage == ShaderStage.Pixel && !storage && ((descriptor[5] >> 25) & 1) != 0,
+            };
             var conversionFormat = ImageConversionFormat(format);
             var shaderSwizzle = storage || conversionFormat != GuestImageFormat.Invalid ? descriptor[3] & 0xFFF : image.ShaderSwizzle;
             var rawSintStorage = storage && format == GuestImageFormat.Format32Sint && baseImage.Written && !baseImage.Read && !baseImage.Atomic;
@@ -1363,6 +1367,8 @@ public static class ResourceMaterializer
 
     // Applies a specialization to the plan's tables: buffer strides and formats, image
     // classes and indirect candidates, point samplers and the sampler each access uses.
+    public static bool RecordMipStatistics { get; set; }
+
     public static SpecializedResourceInfo ApplyTo(ShaderResourcePlan plan, ResourceSpecialization specialization)
     {
         var source = plan.Info;
@@ -1431,6 +1437,7 @@ public static class ResourceMaterializer
             image.IndirectSearchIterations = specialized.IndirectSearchIterations;
             image.Cube = specialized.Cube;
             image.EmulatedCompareFunction = specialized.EmulatedCompareFunction;
+            image.MipStatistics = specialized.MipStatistics;
             if (specialized.EmulatedCompareFunction >= 0)
             {
                 // The shader compares instead; the host keeps a color view and a plain sampler.

@@ -597,6 +597,30 @@ public static class PackedClearValue
         _ => 0,
     };
 
+    // A buffer fill repeats the word in every texel, unlike a DCC clear register.
+    public static bool TryDecodeBufferColor(Format format, uint packed, out ClearColorValue clear)
+    {
+        clear = default;
+        switch (format)
+        {
+            case Format.R16G16Sfloat:
+            case Format.R16G16B16A16Sfloat:
+                var low = BitConverter.UInt16BitsToHalf((ushort)packed);
+                var high = BitConverter.UInt16BitsToHalf((ushort)(packed >> 16));
+                // A float conversion may change a NaN payload; keep the raw fill in that case.
+                if (Half.IsNaN(low) || Half.IsNaN(high)) return false;
+                clear.Float32_0 = clear.Float32_2 = (float)low;
+                clear.Float32_1 = clear.Float32_3 = (float)high;
+                return true;
+            case Format.R32G32Uint:
+            case Format.R32G32B32A32Uint:
+                clear.Uint32_0 = clear.Uint32_1 = clear.Uint32_2 = clear.Uint32_3 = packed;
+                return true;
+            default:
+                return TryDecodeColor(format, packed, out clear);
+        }
+    }
+
     public static bool TryDecodeColor(Format format, uint packed, out ClearColorValue clear)
     {
         static float Unorm8(uint value) => (value & 0xff) / 255.0f;

@@ -32,9 +32,11 @@ public sealed class WaveMaxReductionDeviceTests(HeadlessVulkanFixture fixture) :
     ];
 
     [Theory]
-    [InlineData(0x7E040300u, 63u)] // v_mov_b32 v2, v0: the maximum is in the last lane
-    [InlineData(0x4C0400BFu, 63u)] // v_sub_nc_u32 v2, 63, v0: the maximum is in lane 0
-    public void ReductionYieldsTheWaveMaximum(uint prepareValue, uint expected)
+    [InlineData(0x7E040300u, 63u, false)] // v_mov_b32 v2, v0: the maximum is in the last lane
+    [InlineData(0x4C0400BFu, 63u, false)] // v_sub_nc_u32 v2, 63, v0: the maximum is in lane 0
+    [InlineData(0x7E040300u, 63u, true)]
+    [InlineData(0x4C0400BFu, 63u, true)]
+    public void ReductionYieldsTheWaveMaximum(uint prepareValue, uint expected, bool hostSubgroup32)
     {
         var vulkan = fixture.Vulkan;
         if (!GatePrerequisites.Ready(vulkan, shaderInt64: true)) return;
@@ -58,7 +60,7 @@ public sealed class WaveMaxReductionDeviceTests(HeadlessVulkanFixture fixture) :
         var (plan, resources, layout) = Prepare(program);
         var request = new ShaderCompileRequest(plan, resources, layout)
         {
-            LocalSizeX = 64, ThreadCountX = 64, WaveSize = 64,
+            LocalSizeX = 64, ThreadCountX = 64, WaveSize = 64, HostComputeSubgroup32 = hostSubgroup32,
         };
         Assert.True(Gen5SpirvTranslator.TryCompileProgram(request, out var shader, out var error), error);
         using var harness = new ImageTestHarness(vulkan);

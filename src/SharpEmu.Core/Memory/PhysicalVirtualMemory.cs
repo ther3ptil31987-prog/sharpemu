@@ -2070,6 +2070,13 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
         GuestImageWriteTracker.NotifyManagedWrite(virtualAddress, (ulong)source.Length);
         GuestGpuMemoryHook.MarkCpuWrite(virtualAddress, (ulong)source.Length);
 
+        if (!source.IsEmpty && _backedSpace is { } backed && !_disposed &&
+            backed.TryWriteSingleView(virtualAddress, source))
+        {
+            NotifyGuestWriteWatch(virtualAddress, source);
+            return true;
+        }
+
         var requiresExclusiveAccess = false;
         _gate.EnterReadLock();
         try

@@ -540,8 +540,11 @@ public sealed unsafe class GpuTiler : IDisposable
         return set;
     }
 
-    private void BindDescriptorSet(CommandBuffer command, DescriptorSet set) =>
+    private void BindDescriptorSet(CommandBuffer command, DescriptorSet set)
+    {
         _device.Vk.CmdBindDescriptorSets(command, PipelineBindPoint.Compute, _pipelineLayout, 0, 1, &set, 0, null);
+        Vulkan.NativeBindingEpoch.Advance();
+    }
 
     private void Record(bool tile, VkBuffer source, ulong sourceOffset, ulong sourceCapacity, VkBuffer target, ulong targetOffset, ulong targetCapacity, List<TransferDispatch> dispatches, bool clearTarget)
     {
@@ -587,6 +590,7 @@ public sealed unsafe class GpuTiler : IDisposable
             infos[2] = new DescriptorBufferInfo(dispatch.ArgumentsBuffer, dispatch.ArgumentsOffset, TileTransferArguments.Size);
             BindDescriptorSet(command, WriteDescriptorSet(infos, 2));
             vk.CmdBindPipeline(command, PipelineBindPoint.Compute, GetPipeline(dispatch.PipelineSlot));
+            Vulkan.NativeBindingEpoch.Advance();
             vk.CmdDispatch(command, (dispatch.Arguments.Width + 7) / 8, (dispatch.Arguments.Height + 7) / 8, dispatch.Arguments.Depth);
         }
 
@@ -697,6 +701,7 @@ public sealed unsafe class GpuTiler : IDisposable
         fixed (TileTransferArguments* pointer = &arguments)
         {
             _device.Vk.CmdPushConstants(command, _pipelineLayout, ShaderStageFlags.ComputeBit, 0, TileTransferArguments.Size, pointer);
+            Vulkan.NativeBindingEpoch.Advance();
         }
     }
 
@@ -743,6 +748,7 @@ public sealed unsafe class GpuTiler : IDisposable
             AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit);
         VulkanSynchronization.PipelineBarrier(vk,command, PipelineStageFlags.AllCommandsBit | PipelineStageFlags.HostBit, PipelineStageFlags.ComputeShaderBit, 0, 0, null, 2, barriers, 0, null);
         vk.CmdBindPipeline(command, PipelineBindPoint.Compute, pipeline);
+        Vulkan.NativeBindingEpoch.Advance();
 
         var descriptorAlignment = StorageAlignment;
         var groupLimit = _device.MaxComputeWorkGroupCount;
@@ -830,6 +836,7 @@ public sealed unsafe class GpuTiler : IDisposable
         var command = new CommandBuffer(_scheduler.Current.Handle);
         VulkanSynchronization.PipelineBarrier(vk,command, PipelineStageFlags.AllCommandsBit | PipelineStageFlags.HostBit, PipelineStageFlags.ComputeShaderBit, 0, 0, null, 2, barriers, 0, null);
         vk.CmdBindPipeline(command, PipelineBindPoint.Compute, _swapBgra16);
+        Vulkan.NativeBindingEpoch.Advance();
         BindDescriptorSet(command, WriteDescriptorSet(infos, -1));
         PushArguments(command, new TileTransferArguments { SourceBase = inputBinding.Base, DestinationBase = outputBinding.Base, Width = pixels });
         vk.CmdDispatch(command, (pixels + 63) / 64, 1, 1);

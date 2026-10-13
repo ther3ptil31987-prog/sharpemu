@@ -36,6 +36,13 @@ internal interface IShaderPipelineHost
 
     bool ComputeWave64Supported { get; }
 
+    // True when a 64-invocation wave64 compute workgroup runs as one 64-lane host subgroup.
+    bool ComputeWave64SubgroupNative => false;
+
+    bool ComputeRunsOn32LaneSubgroups(ComputeInputInfo input) => false;
+
+    bool MipStatisticsSubgroupReduction => false;
+
     bool GraphicsSubgroupOperationsEnabled { get; }
 
     // The device supports shaderSharedInt64Atomics, so LDS 64-bit atomics can be

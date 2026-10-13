@@ -212,6 +212,47 @@ public sealed class ImageDescriptionTests
         Assert.All(fatal.Messages, message => Assert.Contains("overlap range is invalid", message));
     }
 
+    [Theory]
+    [InlineData(Format.R16G16Sfloat)]
+    [InlineData(Format.R16G16B16A16Sfloat)]
+    public void BufferFillDecodesRepeatedHalfWordsWithoutChangingDccClears(Format format)
+    {
+        Assert.True(PackedClearValue.TryDecodeBufferColor(format, 0x3c00bc00u, out var clear));
+        Assert.Equal((-1f, 1f, -1f, 1f), (clear.Float32_0, clear.Float32_1, clear.Float32_2, clear.Float32_3));
+        Assert.False(PackedClearValue.TryDecodeColor(format, 0x3c00bc00u, out _));
+        Assert.False(PackedClearValue.TryDecodeBufferColor(format, 0x7e003c00u, out _));
+        Assert.False(PackedClearValue.TryDecodeBufferColor(format, 0x3c007e00u, out _));
+    }
+
+    [Theory]
+    [InlineData(Format.R32G32Uint)]
+    [InlineData(Format.R32G32B32A32Uint)]
+    public void BufferFillRepeatsTheEntireUintWordInEveryComponent(Format format)
+    {
+        Assert.True(PackedClearValue.TryDecodeBufferColor(format, 0xdeadbeefu, out var clear));
+        Assert.Equal((0xdeadbeefu, 0xdeadbeefu, 0xdeadbeefu, 0xdeadbeefu),
+            (clear.Uint32_0, clear.Uint32_1, clear.Uint32_2, clear.Uint32_3));
+    }
+
+    [Fact]
+    public void BufferFillPreservesEveryRepresentableHalfWord()
+    {
+        for (var bits = 0; bits <= ushort.MaxValue; bits++)
+        {
+            var packed = (uint)bits | ((uint)bits << 16);
+            var decoded = PackedClearValue.TryDecodeBufferColor(Format.R16G16B16A16Sfloat, packed, out var clear);
+            if (Half.IsNaN(BitConverter.UInt16BitsToHalf((ushort)bits)))
+            {
+                Assert.False(decoded);
+                continue;
+            }
+
+            Assert.True(decoded);
+            Assert.Equal((ushort)bits, BitConverter.HalfToUInt16Bits((Half)clear.Float32_0));
+            Assert.Equal((ushort)bits, BitConverter.HalfToUInt16Bits((Half)clear.Float32_1));
+        }
+    }
+
     [Fact]
     public void Validate_RejectsInconsistentDescriptions()
     {

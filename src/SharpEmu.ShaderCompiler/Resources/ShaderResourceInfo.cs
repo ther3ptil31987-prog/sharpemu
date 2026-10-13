@@ -82,6 +82,8 @@ public sealed class ImageResource
     public uint IndirectSearchIterations { get; set; }
     public List<uint> IndirectResources { get; set; } = [];
 
+    public bool MipStatistics { get; set; }
+
     public ImageResource Clone()
     {
         var clone = (ImageResource)MemberwiseClone();

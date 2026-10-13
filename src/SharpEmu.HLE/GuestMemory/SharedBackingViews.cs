@@ -118,6 +118,24 @@ public sealed unsafe class SharedBackingViews : IDisposable
         }
     }
 
+    public bool TryWriteSingleView(ulong address, ReadOnlySpan<byte> data)
+    {
+        if (!TryAccessSingleView(address, (ulong)data.Length, out var target))
+        {
+            return false;
+        }
+
+        try
+        {
+            data.CopyTo(new Span<byte>((void*)target, data.Length));
+            return true;
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _activeAccesses);
+        }
+    }
+
     public bool TryReadBacking(ulong address, Span<byte> data)
     {
         if (TryAccessSingleView(address, (ulong)data.Length, out var source))

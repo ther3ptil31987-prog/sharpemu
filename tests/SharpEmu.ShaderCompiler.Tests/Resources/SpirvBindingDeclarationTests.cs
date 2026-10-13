@@ -409,6 +409,25 @@ public sealed class SpirvBindingDeclarationTests
     }
 
     [Fact]
+    public void PixelAppendStartsWithoutHelperLanes()
+    {
+        var appending = Program(
+            MoveScalar(0, 124, 64),
+            DataShare(8, "DsAppend", gds: true, [Gen5Operand.Scalar(124)], [1]),
+            EndProgram(16));
+        var plain = Program(
+            MoveScalar(0, 124, 64),
+            EndProgram(8));
+
+        Assert.True(Gen5SpirvTranslator.TryCompileProgram(Request(appending, ShaderStage.Pixel), out var appendShader, out var error), error);
+        Assert.True(Gen5SpirvTranslator.TryCompileProgram(Request(plain, ShaderStage.Pixel), out var plainShader, out error), error);
+
+        Gen5MipStatisticsTests.ValidateWhenAvailable(appendShader.Spirv);
+        Assert.Contains("helperInvocation", new SpirvModuleInspector(appendShader.Spirv).Names.Values);
+        Assert.DoesNotContain("helperInvocation", new SpirvModuleInspector(plainShader.Spirv).Names.Values);
+    }
+
+    [Fact]
     public void DataShareBpermute_DeclaresTheShuffleCapability()
     {
         // DS_BPERMUTE_B32 v2, v0, v1 lowers to OpGroupNonUniformShuffle.

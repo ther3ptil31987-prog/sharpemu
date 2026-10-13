@@ -172,15 +172,38 @@ public unsafe class GpuBuffer : IDisposable
     // A readback of it only has to wait for that tick, not for all queued work.
     public ulong LastGpuWriteTick { get; private set; }
 
+    private readonly WriteTickMap _writeTicks = new();
+    private int _writeTickPruneCount = 64;
+
     // Called by every path that records a GPU write into this buffer.
-    public void NoteGpuWrite()
+    public void NoteGpuWrite() => NoteGpuWrite(0, Size);
+
+    public void NoteGpuWrite(ulong offset, ulong size)
     {
         var tick = _scheduler.CurrentTick;
         if (tick > LastGpuWriteTick)
         {
             LastGpuWriteTick = tick;
         }
+
+        if (size == 0 || offset >= Size)
+        {
+            return;
+        }
+
+        _writeTicks.Assign(offset, Math.Min(size, Size - offset), tick);
+        if (_writeTicks.Count >= _writeTickPruneCount)
+        {
+            if (Volatile.Read(ref _foreignReads) == 0)
+            {
+                _writeTicks.Prune(_scheduler.Timeline.CompletedTick + 1);
+            }
+
+            _writeTickPruneCount = Math.Max(64, _writeTicks.Count * 2);
+        }
     }
+
+    public ulong LastGpuWriteTickIn(ulong offset, ulong size) => _writeTicks.MaxTick(offset, size);
 
     public void Write(ulong offset, ReadOnlySpan<byte> source)
     {
@@ -243,7 +266,7 @@ public unsafe class GpuBuffer : IDisposable
         }
 
         command.EndRendering();
-        NoteGpuWrite();
+        NoteGpuWrite(destinationOffset, size);
         var vk = _device.Vk;
         var native = new CommandBuffer(command.Handle);
         var before = stackalloc BufferMemoryBarrier2[2];
@@ -271,7 +294,7 @@ public unsafe class GpuBuffer : IDisposable
 
         var command = _scheduler.Current;
         command.EndRendering();
-        NoteGpuWrite();
+        NoteGpuWrite(offset, size);
         var vk = _device.Vk;
         var native = new CommandBuffer(command.Handle);
         var before = CreateBarrier(offset, size, MemoryAccess, AccessFlags.TransferWriteBit);

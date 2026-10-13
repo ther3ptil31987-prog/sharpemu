@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using SharpEmu.HLE;
+using SharpEmu.HLE.FileSystem;
 using System.Buffers.Binary;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
@@ -781,6 +782,7 @@ public static class PlayGoExports
         var playGoDat = Path.Combine(app0Root, "sce_sys", "playgo-chunk.dat");
         var scenarioJson = Path.Combine(app0Root, "sce_sys", "playgo-scenario.json");
         var chunkDefsXml = Path.Combine(app0Root, "playgo-chunkdefs.xml");
+        App0Archive.Extract(chunkDefsXml);
 
         var hasMetadata = File.Exists(playGoDat) || File.Exists(scenarioJson) || File.Exists(chunkDefsXml);
         if (!hasMetadata)
@@ -835,7 +837,7 @@ public static class PlayGoExports
         var ids = new SortedSet<ushort> { 0 };
         try
         {
-            foreach (var pakFile in Directory.EnumerateFiles(app0Root, "pakchunk*.pak", SearchOption.AllDirectories))
+            foreach (var pakFile in App0Archive.EnumerateFilesRecursive(app0Root, "pakchunk*.pak"))
             {
                 var name = Path.GetFileNameWithoutExtension(pakFile);
                 var digits = name.AsSpan("pakchunk".Length);

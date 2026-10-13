@@ -491,15 +491,40 @@ public static partial class AgcExports
     private static bool TryAllocateCommandDwords(CpuContext ctx, ulong commandBufferAddress, uint sizeDwords, out ulong commandAddress)
         => TryPrepareCommandDwords(ctx, commandBufferAddress, sizeDwords, true, out commandAddress);
 
+    private static bool TryEmitCommandDwords(CpuContext ctx, ulong commandBufferAddress, out ulong commandAddress, params ReadOnlySpan<uint> dwords)
+    {
+        return TryAllocateCommandDwords(ctx, commandBufferAddress, (uint)dwords.Length, out commandAddress) &&
+            TryWriteCommandDwords(ctx, commandAddress, dwords);
+    }
+
+    private static bool TryWriteCommandDwords(CpuContext ctx, ulong address, params ReadOnlySpan<uint> dwords) =>
+        ctx.Memory.TryWrite(address, System.Runtime.InteropServices.MemoryMarshal.AsBytes(dwords));
+
+    private const int CommandBufferStateBytes = (int)(CommandBufferReservedDwOffset + sizeof(uint) - CommandBufferCursorUpOffset);
+
+    private static bool TryReadCommandBufferState(CpuContext ctx, ulong commandBufferAddress, out ulong cursorUp, out ulong cursorDown, out ulong callback, out ulong userData, out uint reservedDwords)
+    {
+        Span<byte> state = stackalloc byte[CommandBufferStateBytes];
+        if (!ctx.Memory.TryRead(commandBufferAddress + CommandBufferCursorUpOffset, state))
+        {
+            cursorUp = cursorDown = callback = userData = 0;
+            reservedDwords = 0;
+            return false;
+        }
+
+        cursorUp = BinaryPrimitives.ReadUInt64LittleEndian(state);
+        cursorDown = BinaryPrimitives.ReadUInt64LittleEndian(state[(int)(CommandBufferCursorDownOffset - CommandBufferCursorUpOffset)..]);
+        callback = BinaryPrimitives.ReadUInt64LittleEndian(state[(int)(CommandBufferCallbackOffset - CommandBufferCursorUpOffset)..]);
+        userData = BinaryPrimitives.ReadUInt64LittleEndian(state[(int)(CommandBufferUserDataOffset - CommandBufferCursorUpOffset)..]);
+        reservedDwords = BinaryPrimitives.ReadUInt32LittleEndian(state[(int)(CommandBufferReservedDwOffset - CommandBufferCursorUpOffset)..]);
+        return true;
+    }
+
     private static bool TryPrepareCommandDwords(CpuContext ctx, ulong commandBufferAddress, uint sizeDwords, bool advanceCursor, out ulong commandAddress)
     {
         commandAddress = 0;
         if (sizeDwords == 0 ||
-            !TryReadUInt64(ctx, commandBufferAddress + CommandBufferCursorUpOffset, out var cursorUp) ||
-            !TryReadUInt64(ctx, commandBufferAddress + CommandBufferCursorDownOffset, out var cursorDown) ||
-            !TryReadUInt64(ctx, commandBufferAddress + CommandBufferCallbackOffset, out var callback) ||
-            !TryReadUInt64(ctx, commandBufferAddress + CommandBufferUserDataOffset, out var userData) ||
-            !TryReadUInt32(ctx, commandBufferAddress + CommandBufferReservedDwOffset, out var reservedDwords))
+            !TryReadCommandBufferState(ctx, commandBufferAddress, out var cursorUp, out var cursorDown, out var callback, out var userData, out var reservedDwords))
         {
             return false;
         }

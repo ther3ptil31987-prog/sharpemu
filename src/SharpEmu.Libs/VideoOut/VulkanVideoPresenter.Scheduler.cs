@@ -74,6 +74,18 @@ internal static unsafe partial class VulkanVideoPresenter
                 _ => WakeRenderThread());
         }
 
+        private void RecordRequestedMemoryBarrier(nint handle, MemoryBarrierRequest request)
+        {
+            var barrier = new MemoryBarrier2
+            {
+                SType = StructureType.MemoryBarrier2,
+                SrcAccessMask = VulkanSynchronization.Access(request.SourceAccess),
+                DstAccessMask = VulkanSynchronization.Access(request.DestinationAccess),
+            };
+            VulkanSynchronization.PipelineBarrier(_vk, new CommandBuffer(handle), request.SourceStages, request.DestinationStages,
+                0, 1, &barrier, 0, null, 0, null);
+        }
+
         // Both stores share the manager's page guard and read guest memory through its address space.
         private static (GuestGpuMemory Memory, ICpuMemory Guest, IGuestBackedSpace Backing) RequireGuestMemory(string store)
         {
@@ -120,6 +132,8 @@ internal static unsafe partial class VulkanVideoPresenter
                 // Drain accepted submissions before closing the relay.
                 // Cancel blocked submissions if a full retry cycle makes no progress.
                 _commandStream.StopAccepting();
+                // The command stream thread ends after its slice; the rest drains here.
+                _commandThread?.Stop(() => RunCommandStreamSlices(long.MaxValue));
                 var outcome = _commandStream.DrainForShutdown(cancelBlockedOnNoProgress: true);
                 FlushBatchedGuestCommands();
                 Console.Error.WriteLine(
@@ -163,6 +177,16 @@ internal static unsafe partial class VulkanVideoPresenter
             }
 
             return new CommandBuffer(_scheduler.Current.Handle);
+        }
+
+        private RecordingBuffer CurrentRecording()
+        {
+            if (!_scheduler.Active)
+            {
+                _scheduler.Begin(_submissionContext);
+            }
+
+            return _scheduler.Current;
         }
 
         private void BindSubmissionContext(VulkanGuestQueueIdentity queue)

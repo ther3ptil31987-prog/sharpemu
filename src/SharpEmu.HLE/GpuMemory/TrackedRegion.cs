@@ -46,6 +46,20 @@ public sealed class TrackedRegion
         return GetDirtyMask(side).AnyInRange(start, end);
     }
 
+    public bool IsCpuDirtyThroughout(ulong offset, ulong size)
+    {
+        var (start, end) = GetPageRange(BaseAddress + offset, size);
+        for (var page = start; page < end; page++)
+        {
+            if (!_cpuDirty.Get(page))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     public bool IsCpuWriteHot(ulong offset, ulong size)
     {
         var (start, end) = GetPageRange(BaseAddress + offset, size);

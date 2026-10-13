@@ -1,7 +1,22 @@
 // Copyright (C) 2026 SharpEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+using Silk.NET.Vulkan;
+
 namespace SharpEmu.Libs.Gpu.Scheduling;
+
+public readonly record struct MemoryBarrierRequest(
+    PipelineStageFlags SourceStages,
+    PipelineStageFlags DestinationStages,
+    AccessFlags SourceAccess,
+    AccessFlags DestinationAccess)
+{
+    public MemoryBarrierRequest Union(in MemoryBarrierRequest other) => new(
+        SourceStages | other.SourceStages,
+        DestinationStages | other.DestinationStages,
+        SourceAccess | other.SourceAccess,
+        DestinationAccess | other.DestinationAccess);
+}
 
 public enum RecordedOperation : uint
 {
@@ -23,6 +38,8 @@ public sealed class RecordingBuffer
     private readonly IRenderingState _rendering;
     private SubmissionContext? _context;
     private bool _handleWasRequested;
+    private MemoryBarrierRequest _pendingBarrier;
+    private bool _hasPendingBarrier;
 
     internal nint Buffer;
 
@@ -51,7 +68,11 @@ public sealed class RecordingBuffer
 
     public bool IsInvalid => Buffer == 0;
 
-    internal bool HasPendingCommands => _handleWasRequested || _rendering.IsRendering;
+    internal bool HasPendingCommands => _handleWasRequested || _hasPendingBarrier || _rendering.IsRendering;
+
+    public long MergedBarriers { get; private set; }
+
+    public long RecordedBarriers { get; private set; }
 
     // The native handle stays valid only until the next submission.
     public nint Handle
@@ -64,9 +85,66 @@ public sealed class RecordingBuffer
             }
 
             // A caller can record native commands after it obtains the handle.
+            FlushPendingBarrier();
             _handleWasRequested = true;
             return Buffer;
         }
+    }
+
+    public nint StateHandle
+    {
+        get
+        {
+            if (IsInvalid)
+            {
+                throw SubmissionScheduler.Fatal("The command buffer is not recording.");
+            }
+
+            _handleWasRequested = true;
+            return Buffer;
+        }
+    }
+
+    public void RequestMemoryBarrier(in MemoryBarrierRequest request)
+    {
+        if (IsInvalid || _rendering.IsRendering)
+        {
+            throw SubmissionScheduler.Fatal("A memory barrier needs a recording command buffer outside rendering.");
+        }
+
+        if (_hasPendingBarrier)
+        {
+            _pendingBarrier = _pendingBarrier.Union(request);
+            MergedBarriers++;
+            if (Vulkan.GpuSyncProfile.Enabled)
+            {
+                Vulkan.GpuSyncProfile.CountMergedRequest();
+            }
+
+            return;
+        }
+
+        _pendingBarrier = request;
+        _hasPendingBarrier = true;
+    }
+
+    private void FlushPendingBarrier()
+    {
+        if (!_hasPendingBarrier)
+        {
+            return;
+        }
+
+        _hasPendingBarrier = false;
+        if (_rendering.IsRendering)
+        {
+            throw SubmissionScheduler.Fatal("A pending memory barrier reached a rendering scope.");
+        }
+
+        var recorder = Owner.MemoryBarrierRecorder ??
+            throw SubmissionScheduler.Fatal("A memory barrier was requested without a recorder.");
+        recorder(Buffer, _pendingBarrier);
+        RecordedBarriers++;
     }
 
     public SubmissionContext Context => _context ?? throw SubmissionScheduler.Fatal("The command buffer has no submission context.");
@@ -101,6 +179,7 @@ public sealed class RecordingBuffer
 
         _device.BeginBuffer(Buffer);
         _handleWasRequested = false;
+        _hasPendingBarrier = false;
         SetDebugInfo((uint)RecordedOperation.Unknown, 0);
     }
 

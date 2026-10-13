@@ -220,10 +220,13 @@ internal sealed unsafe class VulkanTickDevice : IGpuTickDevice
             PValues = &tick,
         };
         Result result;
+        var waitStart = GpuWaitSiteProfile.Begin();
         using (RenderPhaseProfile.MeasureDetail(RenderPhaseProfile.Phase.GpuCompletionWait))
         {
             result = _vk.WaitSemaphores(_device, &waitInfo, ulong.MaxValue);
         }
+
+        GpuWaitSiteProfile.End(waitStart);
         failure = result.ToString();
         return result == Result.Success && WaitRetired(tick);
     }
