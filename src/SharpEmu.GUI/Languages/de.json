@@ -19,6 +19,7 @@
 
   "Page.Library": "Bibliothek",
   "Page.Options": "Optionen",
+  "Page.Trophies": "Trophäen",
   "Page.GameCount.One": "1 Spiel",
   "Page.GameCount.Other": "{0} Spiele",
 
@@ -43,6 +44,10 @@
   "Library.Stat.Installed": "Installiert",
   "Library.Stat.TitleId": "Titel-ID",
   "Common.Back": "Zurück",
+
+  "Library.Music.Volume": "Lautstärke der Spielmusik",
+  "Library.Music.Mute": "Spielmusik stummschalten",
+  "Library.Music.Unmute": "Stummschaltung der Spielmusik aufheben",
 
   "Options.General": "Allgemein",
   "Options.Logging": "Protokollierung",
@@ -239,5 +244,37 @@
   "Options.Env.BinkPlayback.Desc": "Host spielt Bink-Videos über die FFmpeg-Brücke ab, bei einigen Spielen können jedoch Probleme auftreten.\nGuest verwendet den spieleigenen Decoder.\nSkip überspringt Bink-Videos, was die Entwicklung erleichtern kann.",
   "Options.Env.BinkPlayback.Host": "Host (FFmpeg)",
   "Options.Env.BinkPlayback.Guest": "Guest",
-  "Options.Env.BinkPlayback.Skip": "Überspringen"
+  "Options.Env.BinkPlayback.Skip": "Überspringen",
+  "Options.Env.Group.Trophies": "Trophäen",
+  "Options.Env.TrophyTest.Label": "Trophäen-Benachrichtigung testen",
+  "Options.Env.TrophyTest.Desc": "Wähle ein Spiel und eine Trophäe und zeige dann deren Freischalt-Benachrichtigung. Es wird nichts freigeschaltet.",
+  "Options.Env.TrophyTest.Show": "Benachrichtigung anzeigen",
+  "Options.Env.TrophySound.Label": "Trophäen-Sound",
+  "Options.Env.TrophySound.Desc": "Spielt einen kurzen Ton ab, wenn eine Trophäe freigeschaltet wird."
+,
+  "Trophies.Title": "Trophäen",
+  "Trophies.None": "Dieses Spiel hat keine Trophäen.",
+  "Trophies.Hidden": "Versteckte Trophäe",
+  "Trophies.HiddenDescription": "Klicken, um diese Trophäe anzuzeigen.",
+  "Trophies.Locked": "Noch nicht verdient",
+  "Trophies.Progress": "{0} / {1} erhalten · {2}%",
+  "Trophies.Unlocked": "Trophäe freigeschaltet",
+  "Trophies.Grade.1": "Platin",
+  "Trophies.Grade.2": "Gold",
+  "Trophies.Grade.3": "Silber",
+  "Trophies.Grade.4": "Bronze",
+  "Trophies.Filter.All": "Alle",
+  "Trophies.Filter.Earned": "Erhalten",
+  "Trophies.Filter.Locked": "Gesperrt",
+  "Trophies.Completed": "abgeschlossen",
+  "Trophies.EarnedTotal": "erhalten",
+  "Trophies.HubSummary": "{0} von {1} Trophäen in {2} Spielen erhalten",
+  "Trophies.RevealHint": "Zum Anzeigen klicken",
+  "Trophies.Latest": "Zuletzt: {0} · {1}",
+  "Trophies.NoneYet": "Noch keine Trophäe erhalten",
+  "Trophies.Sort.Recent": "Zuletzt",
+  "Trophies.Sort.Progress": "Fortschritt",
+  "Trophies.Sort.Name": "A–Z",
+  "Trophies.SearchWatermark": "Spiele suchen",
+  "Trophies.NoMatch": "Kein Spiel passt zu deiner Suche."
 }

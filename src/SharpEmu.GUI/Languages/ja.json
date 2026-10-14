@@ -19,6 +19,7 @@
 
   "Page.Library": "ライブラリ",
   "Page.Options": "オプション",
+  "Page.Trophies": "トロフィー",
   "Page.GameCount.One": "ゲーム 1本",
   "Page.GameCount.Other": "ゲーム {0}本",
 
@@ -43,6 +44,10 @@
   "Library.Stat.Installed": "インストール済み",
   "Library.Stat.TitleId": "タイトルID",
   "Common.Back": "戻る",
+
+  "Library.Music.Volume": "ゲーム音楽の音量",
+  "Library.Music.Mute": "ゲーム音楽をミュート",
+  "Library.Music.Unmute": "ゲーム音楽のミュートを解除",
 
   "Options.General": "一般",
   "Options.Logging": "ロギング",
@@ -239,5 +244,37 @@
   "Options.Env.BinkPlayback.Desc": "Host は FFmpeg ブリッジ経由で Bink 動画を再生しますが、一部のゲームで問題が発生する場合があります。\nGuest はゲームエンジン独自のデコーダーを使用します。\nSkip は Bink 動画をスキップし、開発を容易にする場合があります。",
   "Options.Env.BinkPlayback.Host": "Host (FFmpeg)",
   "Options.Env.BinkPlayback.Guest": "Guest",
-  "Options.Env.BinkPlayback.Skip": "スキップ"
+  "Options.Env.BinkPlayback.Skip": "スキップ",
+  "Options.Env.Group.Trophies": "トロフィー",
+  "Options.Env.TrophyTest.Label": "トロフィー通知をテスト",
+  "Options.Env.TrophyTest.Desc": "ゲームとトロフィーを選び、解除通知を表示します。実際には獲得されません。",
+  "Options.Env.TrophyTest.Show": "通知を表示",
+  "Options.Env.TrophySound.Label": "トロフィー音",
+  "Options.Env.TrophySound.Desc": "トロフィーを獲得したときに短い効果音を再生します。"
+,
+  "Trophies.Title": "トロフィー",
+  "Trophies.None": "このゲームにはトロフィーがありません。",
+  "Trophies.Hidden": "隠しトロフィー",
+  "Trophies.HiddenDescription": "クリックしてこのトロフィーを表示します。",
+  "Trophies.Locked": "まだ獲得していません",
+  "Trophies.Progress": "{0} / {1} 獲得 · {2}%",
+  "Trophies.Unlocked": "トロフィーを獲得しました",
+  "Trophies.Grade.1": "プラチナ",
+  "Trophies.Grade.2": "ゴールド",
+  "Trophies.Grade.3": "シルバー",
+  "Trophies.Grade.4": "ブロンズ",
+  "Trophies.Filter.All": "すべて",
+  "Trophies.Filter.Earned": "獲得済み",
+  "Trophies.Filter.Locked": "未獲得",
+  "Trophies.Completed": "完了",
+  "Trophies.EarnedTotal": "獲得",
+  "Trophies.HubSummary": "{0} / {1} 個のトロフィーを獲得（{2} ゲーム）",
+  "Trophies.RevealHint": "クリックして表示",
+  "Trophies.Latest": "最新：{0} · {1}",
+  "Trophies.NoneYet": "獲得したトロフィーはまだありません",
+  "Trophies.Sort.Recent": "最近",
+  "Trophies.Sort.Progress": "進行状況",
+  "Trophies.Sort.Name": "A–Z",
+  "Trophies.SearchWatermark": "ゲームを検索",
+  "Trophies.NoMatch": "検索に一致するゲームはありません。"
 }

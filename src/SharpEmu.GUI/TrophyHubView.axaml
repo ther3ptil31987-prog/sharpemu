@@ -1,0 +1,167 @@
+<!--
+Copyright (C) 2026 SharpEmu Emulator Project
+SPDX-License-Identifier: GPL-2.0-or-later
+-->
+
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:SharpEmu.GUI"
+             xmlns:controls="clr-namespace:SharpEmu.GUI.Controls"
+             x:Class="SharpEmu.GUI.TrophyHubView"
+             ClipToBounds="True">
+  <Grid>
+    <Image x:Name="BackdropA" Stretch="UniformToFill" Opacity="0">
+      <Image.Effect>
+        <BlurEffect Radius="48" />
+      </Image.Effect>
+      <Image.Transitions>
+        <Transitions>
+          <DoubleTransition Property="Opacity" Duration="0:0:0.7" />
+        </Transitions>
+      </Image.Transitions>
+    </Image>
+    <Image x:Name="BackdropB" Stretch="UniformToFill" Opacity="0">
+      <Image.Effect>
+        <BlurEffect Radius="48" />
+      </Image.Effect>
+      <Image.Transitions>
+        <Transitions>
+          <DoubleTransition Property="Opacity" Duration="0:0:0.7" />
+        </Transitions>
+      </Image.Transitions>
+    </Image>
+    <Border IsHitTestVisible="False">
+      <Border.Background>
+        <LinearGradientBrush StartPoint="0%,0%" EndPoint="0%,100%">
+          <GradientStop Color="#660E0B1A" Offset="0" />
+          <GradientStop Color="#D90E0B1A" Offset="0.4" />
+          <GradientStop Color="#FA0E0B1A" Offset="1" />
+        </LinearGradientBrush>
+      </Border.Background>
+    </Border>
+    <Border IsHitTestVisible="False">
+      <Border.Background>
+        <RadialGradientBrush Center="8%,0%" GradientOrigin="8%,0%" RadiusX="75%" RadiusY="65%">
+          <GradientStop Color="#557C5CFC" Offset="0" />
+          <GradientStop Color="#007C5CFC" Offset="1" />
+        </RadialGradientBrush>
+      </Border.Background>
+    </Border>
+    <Border IsHitTestVisible="False">
+      <Border.Background>
+        <RadialGradientBrush Center="100%,100%" GradientOrigin="100%,100%" RadiusX="70%" RadiusY="60%">
+          <GradientStop Color="#3341C9E8" Offset="0" />
+          <GradientStop Color="#0041C9E8" Offset="1" />
+        </RadialGradientBrush>
+      </Border.Background>
+    </Border>
+
+    <Grid Margin="28,20,28,12" RowDefinitions="Auto,Auto,*">
+      <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="26" Margin="0,0,0,28">
+        <Grid Width="120" Height="120">
+          <Border Width="150" Height="150" CornerRadius="75" IsHitTestVisible="False">
+            <Border.Background>
+              <RadialGradientBrush>
+                <GradientStop Color="#669ED8F2" Offset="0" />
+                <GradientStop Color="#009ED8F2" Offset="1" />
+              </RadialGradientBrush>
+            </Border.Background>
+          </Border>
+          <controls:TrophyMedal x:Name="HeroMedal" Grade="1" Width="112" Height="112" />
+        </Grid>
+        <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="6">
+          <TextBlock Text="{Binding [Trophies.Title], Source={x:Static local:Localization.Instance}}"
+                     FontSize="34"
+                     FontWeight="Bold" />
+          <TextBlock x:Name="TotalOfText" Foreground="#B8B4CC" FontSize="14" />
+          <WrapPanel x:Name="TotalGrades" Orientation="Horizontal" Margin="0,8,0,0" />
+        </StackPanel>
+        <Grid Grid.Column="2" Width="128" Height="128" VerticalAlignment="Center">
+          <controls:TrophyProgressRing x:Name="TotalRing" Thickness="10" />
+          <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+            <TextBlock x:Name="TotalEarnedText" FontSize="30" FontWeight="Bold" HorizontalAlignment="Center" />
+            <TextBlock Text="{Binding [Trophies.EarnedTotal], Source={x:Static local:Localization.Instance}}"
+                       Foreground="#B8B4CC"
+                       FontSize="11"
+                       HorizontalAlignment="Center" />
+          </StackPanel>
+        </Grid>
+      </Grid>
+
+      <Grid Grid.Row="1" ColumnDefinitions="*,Auto" Margin="0,0,12,16">
+        <StackPanel x:Name="SortBar" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center" />
+        <Border x:Name="SearchFrame"
+                Grid.Column="1"
+                Width="260"
+                Height="38"
+                CornerRadius="19"
+                Padding="14,0,6,0"
+                VerticalAlignment="Center"
+                Background="#16FFFFFF"
+                BorderBrush="#26FFFFFF"
+                BorderThickness="1">
+          <Border.Styles>
+            <Style Selector="Border#SearchFrame:pointerover">
+              <Setter Property="Background" Value="#1FFFFFFF" />
+            </Style>
+            <Style Selector="Border#SearchFrame:focus-within">
+              <Setter Property="Width" Value="340" />
+              <Setter Property="Background" Value="#24FFFFFF" />
+              <Setter Property="BorderBrush" Value="#B39B7CFF" />
+              <Setter Property="BoxShadow" Value="0 0 22 0 #669B7CFF" />
+            </Style>
+            <Style Selector="TextBox#SearchBox /template/ Border#PART_BorderElement">
+              <Setter Property="Background" Value="Transparent" />
+              <Setter Property="BorderThickness" Value="0" />
+            </Style>
+            <Style Selector="TextBox#SearchBox:pointerover /template/ Border#PART_BorderElement">
+              <Setter Property="Background" Value="Transparent" />
+              <Setter Property="BorderThickness" Value="0" />
+            </Style>
+            <Style Selector="TextBox#SearchBox:focus /template/ Border#PART_BorderElement">
+              <Setter Property="Background" Value="Transparent" />
+              <Setter Property="BorderThickness" Value="0" />
+            </Style>
+          </Border.Styles>
+          <Border.Transitions>
+            <Transitions>
+              <DoubleTransition Property="Width" Duration="0:0:0.22" Easing="CubicEaseOut" />
+              <BrushTransition Property="Background" Duration="0:0:0.18" />
+              <BrushTransition Property="BorderBrush" Duration="0:0:0.18" />
+              <BoxShadowsTransition Property="BoxShadow" Duration="0:0:0.22" />
+            </Transitions>
+          </Border.Transitions>
+          <Grid ColumnDefinitions="Auto,*,Auto">
+            <TextBlock Classes="materialSymbol compact"
+                       Text="search"
+                       Foreground="#B8B4CC"
+                       VerticalAlignment="Center"
+                       Margin="0,0,8,0" />
+            <TextBox x:Name="SearchBox"
+                     Grid.Column="1"
+                     Background="Transparent"
+                     BorderThickness="0"
+                     Padding="0"
+                     MinHeight="0"
+                     FontSize="13.5"
+                     VerticalAlignment="Center"
+                     VerticalContentAlignment="Center" />
+            <Button x:Name="SearchClear"
+                    Grid.Column="2"
+                    Classes="iconGhost"
+                    Width="28"
+                    Height="28"
+                    IsVisible="False"
+                    VerticalAlignment="Center">
+              <TextBlock Classes="materialSymbol compact" Text="close" />
+            </Button>
+          </Grid>
+        </Border>
+      </Grid>
+
+      <ScrollViewer Grid.Row="2" HorizontalScrollBarVisibility="Disabled">
+        <StackPanel x:Name="GameList" Spacing="12" Margin="0,0,12,12" />
+      </ScrollViewer>
+    </Grid>
+  </Grid>
+</UserControl>

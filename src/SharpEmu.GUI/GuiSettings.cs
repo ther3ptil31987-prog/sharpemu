@@ -40,6 +40,10 @@ public sealed class GuiSettings
     /// <summary>Loop the selected game's sce_sys/snd0.at9 preview music.</summary>
     public bool PlayTitleMusic { get; set; } = true;
 
+    public double TitleMusicVolume { get; set; } = 1.0;
+
+    public bool TrophySound { get; set; } = true;
+
     public string LibraryLayout { get; set; } = "Carousel";
 
     public double EmbeddedConsoleHeight { get; set; } = 240;
@@ -148,6 +152,9 @@ public sealed class GuiSettings
             legacyProfile is { Length: 2 } ? legacyProfile[1] : settings.DefaultProfile);
         settings.DiscordClientId ??= "1525606762248540221";
         settings.LibraryLayout = NormalizeChoice(settings.LibraryLayout, "Carousel", "Grid");
+        settings.TitleMusicVolume = double.IsFinite(settings.TitleMusicVolume)
+            ? Math.Clamp(settings.TitleMusicVolume, 0.0, 1.0)
+            : 1.0;
         settings.ConsoleType = NormalizeChoice(settings.ConsoleType, "PS5");
         settings.ConsoleLanguage = NormalizeChoice(
             settings.ConsoleLanguage,

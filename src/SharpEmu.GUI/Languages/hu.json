@@ -19,6 +19,7 @@
 
   "Page.Library": "Könyvtár",
   "Page.Options": "Beállítások",
+  "Page.Trophies": "Trófeák",
   "Page.GameCount.One": "1 játék",
   "Page.GameCount.Other": "{0} játékok",
 
@@ -43,6 +44,10 @@
   "Library.Stat.Installed": "Telepítve",
   "Library.Stat.TitleId": "Címazonosító",
   "Common.Back": "Vissza",
+
+  "Library.Music.Volume": "Játékzene hangereje",
+  "Library.Music.Mute": "Játékzene némítása",
+  "Library.Music.Unmute": "Játékzene visszakapcsolása",
 
   "Options.General": "Általános",
   "Options.Logging": "Logolás",
@@ -240,5 +245,37 @@
   "Options.Env.BinkPlayback.Desc": "A Host az FFmpeg hídon keresztül játssza le a Bink videókat, de egyes játékoknál problémák jelentkezhetnek.\nA Guest a játékmotor saját dekóderét használja.\nA Skip kihagyja a Bink videókat, ami megkönnyítheti a fejlesztést.",
   "Options.Env.BinkPlayback.Host": "Host (FFmpeg)",
   "Options.Env.BinkPlayback.Guest": "Guest",
-  "Options.Env.BinkPlayback.Skip": "Kihagyás"
+  "Options.Env.BinkPlayback.Skip": "Kihagyás",
+  "Options.Env.Group.Trophies": "Trófeák",
+  "Options.Env.TrophyTest.Label": "Trófeaértesítés tesztelése",
+  "Options.Env.TrophyTest.Desc": "Válassz egy játékot és egy trófeát, majd mutasd meg a feloldási értesítést. Semmi sem oldódik fel.",
+  "Options.Env.TrophyTest.Show": "Értesítés megjelenítése",
+  "Options.Env.TrophySound.Label": "Trófeahang",
+  "Options.Env.TrophySound.Desc": "Rövid hangjelzést játszik le, amikor egy trófea feloldódik."
+,
+  "Trophies.Title": "Trófeák",
+  "Trophies.None": "Ennek a játéknak nincsenek trófeái.",
+  "Trophies.Hidden": "Rejtett trófea",
+  "Trophies.HiddenDescription": "Kattints a trófea megjelenítéséhez.",
+  "Trophies.Locked": "Még nem szerezted meg",
+  "Trophies.Progress": "{0} / {1} megszerezve · {2}%",
+  "Trophies.Unlocked": "Trófea feloldva",
+  "Trophies.Grade.1": "Platina",
+  "Trophies.Grade.2": "Arany",
+  "Trophies.Grade.3": "Ezüst",
+  "Trophies.Grade.4": "Bronz",
+  "Trophies.Filter.All": "Mind",
+  "Trophies.Filter.Earned": "Megszerzett",
+  "Trophies.Filter.Locked": "Zárolt",
+  "Trophies.Completed": "teljesítve",
+  "Trophies.EarnedTotal": "megszerezve",
+  "Trophies.HubSummary": "{0} / {1} trófea megszerezve {2} játékban",
+  "Trophies.RevealHint": "Kattints a megjelenítéshez",
+  "Trophies.Latest": "Legutóbbi: {0} · {1}",
+  "Trophies.NoneYet": "Még nincs megszerzett trófea",
+  "Trophies.Sort.Recent": "Legutóbbi",
+  "Trophies.Sort.Progress": "Előrehaladás",
+  "Trophies.Sort.Name": "A–Z",
+  "Trophies.SearchWatermark": "Játékok keresése",
+  "Trophies.NoMatch": "Nincs a keresésnek megfelelő játék."
 }

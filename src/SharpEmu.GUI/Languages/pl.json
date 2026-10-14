@@ -19,6 +19,7 @@
 
   "Page.Library": "Biblioteka",
   "Page.Options": "Opcje",
+  "Page.Trophies": "Trofea",
   "Page.GameCount.One": "1 gra",
   "Page.GameCount.Other": "{0} gier",
 
@@ -46,6 +47,10 @@
   "Library.Stat.Installed": "Zainstalowano",
   "Library.Stat.TitleId": "Numer seryjny",
   "Common.Back": "Wstecz",
+
+  "Library.Music.Volume": "Głośność muzyki w grze",
+  "Library.Music.Mute": "Wycisz muzykę z gry",
+  "Library.Music.Unmute": "Włącz dźwięk muzyki z gry",
 
   "Options.General": "Ogólne",
   "Options.Logging": "Dziennik zdarzeń",
@@ -106,6 +111,12 @@
   "Options.Env.BinkPlayback.Host": "Host (FFmpeg)",
   "Options.Env.BinkPlayback.Guest": "Guest",
   "Options.Env.BinkPlayback.Skip": "Pomiń",
+  "Options.Env.Group.Trophies": "Trofea",
+  "Options.Env.TrophyTest.Label": "Przetestuj powiadomienie o trofeum",
+  "Options.Env.TrophyTest.Desc": "Wybierz grę i trofeum, a następnie pokaż powiadomienie o odblokowaniu. Nic nie zostaje odblokowane.",
+  "Options.Env.TrophyTest.Show": "Pokaż powiadomienie",
+  "Options.Env.TrophySound.Label": "Dźwięk trofeów",
+  "Options.Env.TrophySound.Desc": "Odtwarza krótki sygnał po odblokowaniu trofeum.",
 
   "Options.CpuEngine.Label": "Silnik CPU",
   "Options.CpuEngine.Desc": "Silnik wykonawczy używany do uruchamiania kodu gry.",
@@ -245,4 +256,30 @@
   "Updater.Status.Failed": "Nie udało się sprawdzić aktualizacji.",
   "Updater.Status.ChecksumFailed": "Pobrana aktualizacja nie przeszła weryfikacji SHA-256.",
   "Updater.Status.Unsupported": "Automatyczna aktualizacja wymaga wersji dla Windows, Linux lub macOS x64."
+,
+  "Trophies.Title": "Trofea",
+  "Trophies.None": "Ta gra nie ma trofeów.",
+  "Trophies.Hidden": "Ukryte trofeum",
+  "Trophies.HiddenDescription": "Kliknij, aby odkryć to trofeum.",
+  "Trophies.Locked": "Jeszcze nie zdobyte",
+  "Trophies.Progress": "{0} / {1} zdobytych · {2}%",
+  "Trophies.Unlocked": "Trofeum odblokowane",
+  "Trophies.Grade.1": "Platyna",
+  "Trophies.Grade.2": "Złoto",
+  "Trophies.Grade.3": "Srebro",
+  "Trophies.Grade.4": "Brąz",
+  "Trophies.Filter.All": "Wszystkie",
+  "Trophies.Filter.Earned": "Zdobyte",
+  "Trophies.Filter.Locked": "Zablokowane",
+  "Trophies.Completed": "ukończono",
+  "Trophies.EarnedTotal": "zdobyte",
+  "Trophies.HubSummary": "{0} z {1} trofeów zdobytych w {2} grach",
+  "Trophies.RevealHint": "Kliknij, aby odkryć",
+  "Trophies.Latest": "Ostatnie: {0} · {1}",
+  "Trophies.NoneYet": "Nie zdobyto jeszcze żadnego trofeum",
+  "Trophies.Sort.Recent": "Ostatnie",
+  "Trophies.Sort.Progress": "Postęp",
+  "Trophies.Sort.Name": "A–Z",
+  "Trophies.SearchWatermark": "Szukaj gier",
+  "Trophies.NoMatch": "Żadna gra nie pasuje do wyszukiwania."
 }

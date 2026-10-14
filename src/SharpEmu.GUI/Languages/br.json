@@ -19,6 +19,7 @@
 
   "Page.Library": "Biblioteca",
   "Page.Options": "Opções",
+  "Page.Trophies": "Troféus",
   "Page.GameCount.One": "1 Jogo",
   "Page.GameCount.Other": "{0} jogos",
 
@@ -43,6 +44,10 @@
   "Library.Stat.Installed": "Instalado",
   "Library.Stat.TitleId": "ID do título",
   "Common.Back": "Voltar",
+
+  "Library.Music.Volume": "Volume da música do jogo",
+  "Library.Music.Mute": "Silenciar música do jogo",
+  "Library.Music.Unmute": "Ativar som da música do jogo",
 
   "Options.General": "Opções Gerais",
   "Options.Logging": "Logs",
@@ -240,5 +245,37 @@
   "Options.Env.BinkPlayback.Desc": "Host reproduz vídeos Bink pela ponte FFmpeg, mas alguns jogos podem apresentar problemas.\nGuest usa o decodificador do próprio motor do jogo.\nSkip ignora os vídeos Bink, o que pode facilitar o desenvolvimento.",
   "Options.Env.BinkPlayback.Host": "Host (FFmpeg)",
   "Options.Env.BinkPlayback.Guest": "Guest",
-  "Options.Env.BinkPlayback.Skip": "Ignorar"
+  "Options.Env.BinkPlayback.Skip": "Ignorar",
+  "Options.Env.Group.Trophies": "Troféus",
+  "Options.Env.TrophyTest.Label": "Testar a notificação de troféus",
+  "Options.Env.TrophyTest.Desc": "Escolha um jogo e um troféu e exiba a notificação de desbloqueio dele. Nada é desbloqueado.",
+  "Options.Env.TrophyTest.Show": "Exibir notificação",
+  "Options.Env.TrophySound.Label": "Som dos troféus",
+  "Options.Env.TrophySound.Desc": "Reproduz um breve toque quando um troféu é desbloqueado."
+,
+  "Trophies.Title": "Troféus",
+  "Trophies.None": "Este jogo não tem troféus.",
+  "Trophies.Hidden": "Troféu oculto",
+  "Trophies.HiddenDescription": "Clique para revelar este troféu.",
+  "Trophies.Locked": "Ainda não obtido",
+  "Trophies.Progress": "{0} / {1} obtidos · {2}%",
+  "Trophies.Unlocked": "Troféu desbloqueado",
+  "Trophies.Grade.1": "Platina",
+  "Trophies.Grade.2": "Ouro",
+  "Trophies.Grade.3": "Prata",
+  "Trophies.Grade.4": "Bronze",
+  "Trophies.Filter.All": "Todos",
+  "Trophies.Filter.Earned": "Obtidos",
+  "Trophies.Filter.Locked": "Bloqueados",
+  "Trophies.Completed": "concluído",
+  "Trophies.EarnedTotal": "obtidos",
+  "Trophies.HubSummary": "{0} de {1} troféus obtidos em {2} jogos",
+  "Trophies.RevealHint": "Clique para revelar",
+  "Trophies.Latest": "Mais recente: {0} · {1}",
+  "Trophies.NoneYet": "Nenhum troféu obtido ainda",
+  "Trophies.Sort.Recent": "Recentes",
+  "Trophies.Sort.Progress": "Progresso",
+  "Trophies.Sort.Name": "A–Z",
+  "Trophies.SearchWatermark": "Pesquisar jogos",
+  "Trophies.NoMatch": "Nenhum jogo corresponde à sua pesquisa."
 }

@@ -19,6 +19,7 @@
 
   "Page.Library": "Bibliotheek",
   "Page.Options": "Opties",
+  "Page.Trophies": "Trofeeën",
   "Page.GameCount.One": "1 game",
   "Page.GameCount.Other": "{0} games",
 
@@ -43,6 +44,10 @@
   "Library.Stat.Installed": "Geïnstalleerd",
   "Library.Stat.TitleId": "Titel-ID",
   "Common.Back": "Terug",
+
+  "Library.Music.Volume": "Volume van gamemuziek",
+  "Library.Music.Mute": "Gamemuziek dempen",
+  "Library.Music.Unmute": "Dempen van gamemuziek opheffen",
 
   "Options.General": "Algemeen",
   "Options.Logging": "Logging",
@@ -239,5 +244,37 @@
   "Options.Env.BinkPlayback.Desc": "Host speelt Bink-video's af via de FFmpeg-brug, maar sommige games kunnen problemen hebben.\nGuest gebruikt de eigen decoder van de game-engine.\nSkip slaat Bink-video's over, wat de ontwikkeling kan vergemakkelijken.",
   "Options.Env.BinkPlayback.Host": "Host (FFmpeg)",
   "Options.Env.BinkPlayback.Guest": "Guest",
-  "Options.Env.BinkPlayback.Skip": "Overslaan"
+  "Options.Env.BinkPlayback.Skip": "Overslaan",
+  "Options.Env.Group.Trophies": "Trofeeën",
+  "Options.Env.TrophyTest.Label": "Trofee-melding testen",
+  "Options.Env.TrophyTest.Desc": "Kies een game en een trofee en toon vervolgens de ontgrendelingsmelding. Er wordt niets ontgrendeld.",
+  "Options.Env.TrophyTest.Show": "Melding tonen",
+  "Options.Env.TrophySound.Label": "Trofee-geluid",
+  "Options.Env.TrophySound.Desc": "Speelt een kort geluidje af wanneer een trofee wordt ontgrendeld."
+,
+  "Trophies.Title": "Trofeeën",
+  "Trophies.None": "Deze game heeft geen trofeeën.",
+  "Trophies.Hidden": "Verborgen trofee",
+  "Trophies.HiddenDescription": "Klik om deze trofee te onthullen.",
+  "Trophies.Locked": "Nog niet verdiend",
+  "Trophies.Progress": "{0} / {1} behaald · {2}%",
+  "Trophies.Unlocked": "Trofee ontgrendeld",
+  "Trophies.Grade.1": "Platina",
+  "Trophies.Grade.2": "Goud",
+  "Trophies.Grade.3": "Zilver",
+  "Trophies.Grade.4": "Brons",
+  "Trophies.Filter.All": "Alle",
+  "Trophies.Filter.Earned": "Behaald",
+  "Trophies.Filter.Locked": "Vergrendeld",
+  "Trophies.Completed": "voltooid",
+  "Trophies.EarnedTotal": "behaald",
+  "Trophies.HubSummary": "{0} van {1} trofeeën behaald in {2} games",
+  "Trophies.RevealHint": "Klik om te onthullen",
+  "Trophies.Latest": "Laatste: {0} · {1}",
+  "Trophies.NoneYet": "Nog geen trofee behaald",
+  "Trophies.Sort.Recent": "Recent",
+  "Trophies.Sort.Progress": "Voortgang",
+  "Trophies.Sort.Name": "A–Z",
+  "Trophies.SearchWatermark": "Games zoeken",
+  "Trophies.NoMatch": "Geen game komt overeen met je zoekopdracht."
 }

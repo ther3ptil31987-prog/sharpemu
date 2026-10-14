@@ -19,6 +19,7 @@
 
   "Page.Library": "Bibliotek",
   "Page.Options": "Indstillinger",
+  "Page.Trophies": "Trofæer",
   "Page.GameCount.One": "1 spil",
   "Page.GameCount.Other": "{0} spil",
 
@@ -43,6 +44,10 @@
   "Library.Stat.Installed": "Installeret",
   "Library.Stat.TitleId": "Titel-id",
   "Common.Back": "Tilbage",
+
+  "Library.Music.Volume": "Lydstyrke for spilmusik",
+  "Library.Music.Mute": "Slå spilmusik fra",
+  "Library.Music.Unmute": "Slå spilmusik til",
 
   "Options.General": "Generelt",
   "Options.Logging": "Logging",
@@ -239,5 +244,37 @@
   "Options.Env.BinkPlayback.Desc": "Host afspiller Bink-videoer via FFmpeg-broen, men nogle spil kan opleve problemer.\nGuest bruger spilmotorens egen dekoder.\nSkip springer Bink-videoer over, hvilket kan gøre udviklingen nemmere.",
   "Options.Env.BinkPlayback.Host": "Host (FFmpeg)",
   "Options.Env.BinkPlayback.Guest": "Guest",
-  "Options.Env.BinkPlayback.Skip": "Spring over"
+  "Options.Env.BinkPlayback.Skip": "Spring over",
+  "Options.Env.Group.Trophies": "Trofæer",
+  "Options.Env.TrophyTest.Label": "Test trofæ-notifikationen",
+  "Options.Env.TrophyTest.Desc": "Vælg et spil og et trofæ, og vis derefter oplåsningsnotifikationen. Intet bliver låst op.",
+  "Options.Env.TrophyTest.Show": "Vis notifikation",
+  "Options.Env.TrophySound.Label": "Trofæ-lyd",
+  "Options.Env.TrophySound.Desc": "Afspiller en kort lyd, når et trofæ låses op."
+,
+  "Trophies.Title": "Trofæer",
+  "Trophies.None": "Dette spil har ingen trofæer.",
+  "Trophies.Hidden": "Skjult trofæ",
+  "Trophies.HiddenDescription": "Klik for at afsløre dette trofæ.",
+  "Trophies.Locked": "Ikke opnået endnu",
+  "Trophies.Progress": "{0} / {1} opnået · {2}%",
+  "Trophies.Unlocked": "Trofæ låst op",
+  "Trophies.Grade.1": "Platin",
+  "Trophies.Grade.2": "Guld",
+  "Trophies.Grade.3": "Sølv",
+  "Trophies.Grade.4": "Bronze",
+  "Trophies.Filter.All": "Alle",
+  "Trophies.Filter.Earned": "Opnået",
+  "Trophies.Filter.Locked": "Låst",
+  "Trophies.Completed": "fuldført",
+  "Trophies.EarnedTotal": "opnået",
+  "Trophies.HubSummary": "{0} af {1} trofæer opnået på tværs af {2} spil",
+  "Trophies.RevealHint": "Klik for at afsløre",
+  "Trophies.Latest": "Seneste: {0} · {1}",
+  "Trophies.NoneYet": "Endnu intet trofæ opnået",
+  "Trophies.Sort.Recent": "Seneste",
+  "Trophies.Sort.Progress": "Fremskridt",
+  "Trophies.Sort.Name": "A–Z",
+  "Trophies.SearchWatermark": "Søg efter spil",
+  "Trophies.NoMatch": "Intet spil matcher din søgning."
 }

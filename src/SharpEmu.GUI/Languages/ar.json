@@ -19,6 +19,7 @@
 
   "Page.Library": "المكتبة",
   "Page.Options": "الخيارات",
+  "Page.Trophies": "الجوائز",
   "Page.GameCount.One": "لعبة واحدة",
   "Page.GameCount.Other": "{0} لعبة",
 
@@ -43,6 +44,10 @@
   "Library.Stat.Installed": "المثبت",
   "Library.Stat.TitleId": "معرّف اللعبة",
   "Common.Back": "رجوع",
+
+  "Library.Music.Volume": "مستوى صوت موسيقى اللعبة",
+  "Library.Music.Mute": "كتم موسيقى اللعبة",
+  "Library.Music.Unmute": "إلغاء كتم موسيقى اللعبة",
 
   "Options.General": "عام",
   "Options.Logging": "التسجيل",
@@ -239,5 +244,37 @@
   "Options.Env.BinkPlayback.Desc": "يقوم Host بتشغيل فيديوهات Bink عبر جسر FFmpeg، لكن قد تظهر مشكلات في بعض الألعاب.\nيستخدم Guest وحدة فك الترميز الخاصة بمحرك اللعبة.\nيتخطى Skip فيديوهات Bink، مما قد يجعل التطوير أسهل.",
   "Options.Env.BinkPlayback.Host": "Host (FFmpeg)",
   "Options.Env.BinkPlayback.Guest": "Guest",
-  "Options.Env.BinkPlayback.Skip": "تخطي"
+  "Options.Env.BinkPlayback.Skip": "تخطي",
+  "Options.Env.Group.Trophies": "الجوائز",
+  "Options.Env.TrophyTest.Label": "اختبار إشعار الجوائز",
+  "Options.Env.TrophyTest.Desc": "اختر لعبة وجائزة، ثم اعرض إشعار فتحها. لن يتم فتح أي شيء.",
+  "Options.Env.TrophyTest.Show": "عرض الإشعار",
+  "Options.Env.TrophySound.Label": "صوت الجوائز",
+  "Options.Env.TrophySound.Desc": "يشغّل نغمة قصيرة عند فتح جائزة."
+,
+  "Trophies.Title": "الجوائز",
+  "Trophies.None": "لا توجد جوائز لهذه اللعبة.",
+  "Trophies.Hidden": "جائزة مخفية",
+  "Trophies.HiddenDescription": "انقر لكشف هذه الجائزة.",
+  "Trophies.Locked": "لم تُنل بعد",
+  "Trophies.Progress": "{0} / {1} نيلاً · {2}%",
+  "Trophies.Unlocked": "تم فتح الجائزة",
+  "Trophies.Grade.1": "بلاتين",
+  "Trophies.Grade.2": "ذهبي",
+  "Trophies.Grade.3": "فضي",
+  "Trophies.Grade.4": "برونزي",
+  "Trophies.Filter.All": "الكل",
+  "Trophies.Filter.Earned": "مُنال",
+  "Trophies.Filter.Locked": "مقفل",
+  "Trophies.Completed": "مكتمل",
+  "Trophies.EarnedTotal": "مُنال",
+  "Trophies.HubSummary": "نيل {0} من أصل {1} جائزة في {2} لعبة",
+  "Trophies.RevealHint": "انقر لكشف",
+  "Trophies.Latest": "الأحدث: {0} · {1}",
+  "Trophies.NoneYet": "لم تُنل أي جائزة بعد",
+  "Trophies.Sort.Recent": "الأحدث",
+  "Trophies.Sort.Progress": "التقدّم",
+  "Trophies.Sort.Name": "A–Z",
+  "Trophies.SearchWatermark": "ابحث عن لعبة",
+  "Trophies.NoMatch": "لا توجد لعبة تطابق بحثك."
 }

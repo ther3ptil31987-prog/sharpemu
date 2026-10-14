@@ -19,6 +19,7 @@
 
   "Page.Library": "라이브러리",
   "Page.Options": "옵션",
+  "Page.Trophies": "트로피",
   "Page.GameCount.One": "게임 1개",
   "Page.GameCount.Other": "게임 {0}개",
 
@@ -43,6 +44,10 @@
   "Library.Stat.Installed": "설치됨",
   "Library.Stat.TitleId": "타이틀 ID",
   "Common.Back": "뒤로",
+
+  "Library.Music.Volume": "게임 음악 볼륨",
+  "Library.Music.Mute": "게임 음악 음소거",
+  "Library.Music.Unmute": "게임 음악 음소거 해제",
 
   "Options.General": "일반",
   "Options.Logging": "로깅",
@@ -239,5 +244,37 @@
   "Options.Env.BinkPlayback.Desc": "Host는 FFmpeg 브리지를 통해 Bink 비디오를 재생하지만 일부 게임에서 문제가 발생할 수 있습니다.\nGuest는 게임 엔진 자체 디코더를 사용합니다.\nSkip은 Bink 비디오를 건너뛰어 개발을 더 쉽게 할 수 있습니다.",
   "Options.Env.BinkPlayback.Host": "Host (FFmpeg)",
   "Options.Env.BinkPlayback.Guest": "Guest",
-  "Options.Env.BinkPlayback.Skip": "건너뛰기"
+  "Options.Env.BinkPlayback.Skip": "건너뛰기",
+  "Options.Env.Group.Trophies": "트로피",
+  "Options.Env.TrophyTest.Label": "트로피 알림 테스트",
+  "Options.Env.TrophyTest.Desc": "게임과 트로피를 고른 다음 잠금 해제 알림을 표시합니다. 실제로 획득되지는 않습니다.",
+  "Options.Env.TrophyTest.Show": "알림 표시",
+  "Options.Env.TrophySound.Label": "트로피 소리",
+  "Options.Env.TrophySound.Desc": "트로피를 획득하면 짧은 알림음을 재생합니다."
+,
+  "Trophies.Title": "트로피",
+  "Trophies.None": "이 게임에는 트로피가 없습니다.",
+  "Trophies.Hidden": "숨겨진 트로피",
+  "Trophies.HiddenDescription": "클릭하여 이 트로피를 표시합니다.",
+  "Trophies.Locked": "아직 획득하지 않음",
+  "Trophies.Progress": "{0} / {1} 획득 · {2}%",
+  "Trophies.Unlocked": "트로피 잠금 해제됨",
+  "Trophies.Grade.1": "플래티넘",
+  "Trophies.Grade.2": "골드",
+  "Trophies.Grade.3": "실버",
+  "Trophies.Grade.4": "브론즈",
+  "Trophies.Filter.All": "전체",
+  "Trophies.Filter.Earned": "획득",
+  "Trophies.Filter.Locked": "잠김",
+  "Trophies.Completed": "완료",
+  "Trophies.EarnedTotal": "획득",
+  "Trophies.HubSummary": "{0} / {1} 트로피 획득 · {2}개 게임",
+  "Trophies.RevealHint": "클릭하여 표시",
+  "Trophies.Latest": "최근: {0} · {1}",
+  "Trophies.NoneYet": "아직 획득한 트로피 없음",
+  "Trophies.Sort.Recent": "최근",
+  "Trophies.Sort.Progress": "진행률",
+  "Trophies.Sort.Name": "A–Z",
+  "Trophies.SearchWatermark": "게임 검색",
+  "Trophies.NoMatch": "검색과 일치하는 게임이 없습니다."
 }

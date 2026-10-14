@@ -2,40 +2,52 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using System.Buffers.Binary;
-using System.Runtime.InteropServices;
 using System.Text;
 using LibAtrac9;
+using SDL;
+using static SDL.SDL3;
 
 namespace SharpEmu.GUI;
 
 /// <summary>
 /// Loops a game's sce_sys/snd0.at9 preview music while the game is selected
 /// in the library, like the console home screen. The ATRAC9 stream is decoded
-/// to WAV on a background task (vendored LibAtrac9); playback uses winmm's
-/// PlaySound, so this is Windows-only and a no-op elsewhere.
+/// to WAV on a background task (vendored LibAtrac9); SDL3 plays the PCM on
+/// Windows, Linux and macOS.
 /// </summary>
 internal sealed class SndPreviewPlayer
 {
-    private const uint SND_ASYNC = 0x0001;
-    private const uint SND_NODEFAULT = 0x0002;
-    private const uint SND_MEMORY = 0x0004;
-    private const uint SND_LOOP = 0x0008;
-
     private readonly object _sync = new();
     private int _generation;
-    private GCHandle _pinnedWav;
-    private bool _playing;
+    private unsafe SDL_AudioStream* _stream;
+    private int _pcmOffset;
+    private int _targetQueuedBytes;
     private bool _paused;
     private bool _muted;
+    private double _volume = 1.0;
     private string? _cachedPath;
     private byte[]? _cachedWav;
 
+    public unsafe double Volume
+    {
+        set
+        {
+            lock (_sync)
+            {
+                _volume = double.IsFinite(value) ? Math.Clamp(value, 0.0, 1.0) : 1.0;
+                if (_stream is not null)
+                {
+                    SDL_SetAudioStreamGain(_stream, (float)_volume);
+                }
+            }
+        }
+    }
+
     /// <summary>
     /// Keeps the music silent while set, even across <see cref="Play"/> and
-    /// <see cref="Resume"/>; the track stays ready so clearing it and
-    /// resuming restarts the music.
+    /// <see cref="Resume"/>; the track stays ready to continue after unmuting.
     /// </summary>
-    public bool Muted
+    public unsafe bool Muted
     {
         get
         {
@@ -46,18 +58,12 @@ internal sealed class SndPreviewPlayer
         }
         set
         {
-            if (!OperatingSystem.IsWindows())
-            {
-                return;
-            }
-
             lock (_sync)
             {
                 _muted = value;
-                if (value && _playing)
+                if (value && _stream is not null)
                 {
-                    _ = PlaySound(0, 0, 0);
-                    _playing = false;
+                    SDL_PauseAudioStreamDevice(_stream);
                     _paused = true;
                 }
             }
@@ -67,11 +73,6 @@ internal sealed class SndPreviewPlayer
     /// <summary>Starts looping the given snd0.at9 after a short debounce.</summary>
     public void Play(string at9Path)
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            return;
-        }
-
         int generation;
         lock (_sync)
         {
@@ -119,19 +120,14 @@ internal sealed class SndPreviewPlayer
                 _cachedPath = at9Path;
                 _cachedWav = wav;
                 StopLocked();
-
-                // The WAV image must stay pinned while winmm plays from it.
-                _pinnedWav = GCHandle.Alloc(wav, GCHandleType.Pinned);
-                if (_muted)
+                try
                 {
-                    _paused = true;
-                    return;
+                    StartLocked(wav);
                 }
-
-                _playing = PlaySound(_pinnedWav.AddrOfPinnedObject(), 0, SND_MEMORY | SND_ASYNC | SND_LOOP | SND_NODEFAULT);
-                if (!_playing)
+                catch (Exception error) when (error is DllNotFoundException or EntryPointNotFoundException or InvalidOperationException)
                 {
-                    _pinnedWav.Free();
+                    Console.Error.WriteLine($"[GUI][WARN] Title music playback unavailable: {error.Message}");
+                    StopLocked();
                 }
             }
         });
@@ -139,11 +135,6 @@ internal sealed class SndPreviewPlayer
 
     public void Stop()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            return;
-        }
-
         lock (_sync)
         {
             _generation++;
@@ -152,58 +143,137 @@ internal sealed class SndPreviewPlayer
     }
 
     /// <summary>
-    /// Silences playback but keeps the decoded track ready, so
-    /// <see cref="Resume"/> can restart it (winmm cannot truly pause).
+    /// Pauses playback while preserving the current position and queued audio.
     /// </summary>
-    public void Pause()
+    public unsafe void Pause()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            return;
-        }
-
         lock (_sync)
         {
-            if (!_playing)
+            if (_stream is null || _paused)
             {
                 return;
             }
-
-            _ = PlaySound(0, 0, 0);
-            _playing = false;
+            SDL_PauseAudioStreamDevice(_stream);
             _paused = true;
         }
     }
 
-    /// <summary>Restarts the track silenced by <see cref="Pause"/>.</summary>
-    public void Resume()
+    /// <summary>Continues the track silenced by <see cref="Pause"/>.</summary>
+    public unsafe void Resume()
     {
-        if (!OperatingSystem.IsWindows())
+        lock (_sync)
+        {
+            if (!_paused || _muted || _stream is null)
+            {
+                return;
+            }
+            SDL_ResumeAudioStreamDevice(_stream);
+            _paused = false;
+        }
+    }
+
+    private unsafe void StartLocked(byte[] wav)
+    {
+        if (wav.Length <= 44)
         {
             return;
         }
 
-        lock (_sync)
+        if ((SDL_WasInit(SDL_InitFlags.SDL_INIT_AUDIO) & SDL_InitFlags.SDL_INIT_AUDIO) == 0 &&
+            !SDL_InitSubSystem(SDL_InitFlags.SDL_INIT_AUDIO))
         {
-            if (!_paused || _muted || !_pinnedWav.IsAllocated)
-            {
-                return;
-            }
+            throw new InvalidOperationException("SDL audio initialization failed.");
+        }
 
-            _paused = false;
-            _playing = PlaySound(_pinnedWav.AddrOfPinnedObject(), 0, SND_MEMORY | SND_ASYNC | SND_LOOP | SND_NODEFAULT);
+        var spec = new SDL_AudioSpec
+        {
+            format = SDL_AudioFormat.SDL_AUDIO_S16LE,
+            channels = checked((byte)BinaryPrimitives.ReadInt16LittleEndian(wav.AsSpan(22))),
+            freq = BinaryPrimitives.ReadInt32LittleEndian(wav.AsSpan(24)),
+        };
+        _stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, null, IntPtr.Zero);
+        if (_stream is null)
+        {
+            throw new InvalidOperationException("SDL audio stream creation failed.");
+        }
+
+        SDL_SetAudioStreamGain(_stream, (float)_volume);
+        _targetQueuedBytes = spec.freq * spec.channels * sizeof(short) / 4; // 250 ms of buffered audio
+        _pcmOffset = 44;
+        FillStreamLocked(wav);
+        _paused = _muted;
+        if (!_muted && !SDL_ResumeAudioStreamDevice(_stream))
+        {
+            throw new InvalidOperationException("SDL audio stream start failed.");
+        }
+
+        _ = PumpAsync(_generation, wav);
+    }
+
+    private async Task PumpAsync(int generation, byte[] wav)
+    {
+        while (true)
+        {
+            await Task.Delay(40).ConfigureAwait(false);
+            lock (_sync)
+            {
+                if (generation != _generation)
+                {
+                    return;
+                }
+
+                FillStreamIfActiveLocked(wav);
+            }
         }
     }
 
-    private void StopLocked()
+    private unsafe void FillStreamIfActiveLocked(byte[] wav)
     {
-        _ = PlaySound(0, 0, 0);
-        _playing = false;
-        _paused = false;
-        if (_pinnedWav.IsAllocated)
+        if (_stream is not null && !_paused)
         {
-            _pinnedWav.Free();
+            FillStreamLocked(wav);
         }
+    }
+
+    private unsafe void FillStreamLocked(byte[] wav)
+    {
+        var remaining = _targetQueuedBytes - SDL_GetAudioStreamQueued(_stream);
+        while (remaining > 0)
+        {
+            if (_pcmOffset == wav.Length)
+            {
+                _pcmOffset = 44;
+            }
+
+            var bytes = Math.Min(remaining, wav.Length - _pcmOffset);
+            bytes -= bytes % (BinaryPrimitives.ReadInt16LittleEndian(wav.AsSpan(22)) * sizeof(short));
+            if (bytes == 0)
+            {
+                break;
+            }
+
+            fixed (byte* data = &wav[_pcmOffset])
+            {
+                if (!SDL_PutAudioStreamData(_stream, (nint)data, bytes))
+                {
+                    break;
+                }
+            }
+
+            _pcmOffset += bytes;
+            remaining -= bytes;
+        }
+    }
+
+    private unsafe void StopLocked()
+    {
+        if (_stream is not null)
+        {
+            SDL_DestroyAudioStream(_stream);
+            _stream = null;
+        }
+
+        _paused = false;
     }
 
     private static readonly Guid Atrac9SubFormat = new("47E142D2-36BA-4D8D-88FC-61654F8C836C");
@@ -335,8 +405,4 @@ internal sealed class SndPreviewPlayer
         Encoding.ASCII.GetBytes("data").CopyTo(span[36..]);
         BinaryPrimitives.WriteInt32LittleEndian(span[40..], sampleCount * channels * 2);
     }
-
-    [DllImport("winmm.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool PlaySound(nint sound, nint module, uint flags);
 }

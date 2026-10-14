@@ -3,6 +3,7 @@
 
   "Page.Library": "Kitabxana",
   "Page.Options": "Parametrlər",
+  "Page.Trophies": "Kuboklar",
   "Page.GameCount.One": "1 oyun",
   "Page.GameCount.Other": "{0} oyun",
 
@@ -30,6 +31,10 @@
   "Library.Stat.Installed": "Quraşdırılıb",
   "Library.Stat.TitleId": "Oyunun ID-si",
   "Common.Back": "Geri qayıt",
+
+  "Library.Music.Volume": "Oyun musiqisinin səs səviyyəsi",
+  "Library.Music.Mute": "Oyun musiqisini susdur",
+  "Library.Music.Unmute": "Oyun musiqisinin səsini aç",
 
   "Options.General": "Ümumi",
   "Options.Logging": "Jurnala yazma",
@@ -95,6 +100,12 @@
   "Options.Env.BinkPlayback.Host": "Host (FFmpeg)",
   "Options.Env.BinkPlayback.Guest": "Guest",
   "Options.Env.BinkPlayback.Skip": "Skip",
+  "Options.Env.Group.Trophies": "Kuboklar",
+  "Options.Env.TrophyTest.Label": "Kubok bildirişini sına",
+  "Options.Env.TrophyTest.Desc": "Oyun və kubok seçin, sonra açılma bildirişini göstərin. Heç nə qazanılmır.",
+  "Options.Env.TrophyTest.Show": "Bildirişi göstər",
+  "Options.Env.TrophySound.Label": "Kubok səsi",
+  "Options.Env.TrophySound.Desc": "Kubok açılanda qısa bir səs çalınır.",
 
   "Options.CpuEngine.Label": "CPU icra mühərriki",
   "Options.CpuEngine.Desc": "Oyun kodunu işlətmək üçün istifadə olunan icra mühərriki.",
@@ -240,4 +251,30 @@
   "Updater.Status.Failed": "Yeniləmələri yoxlamaq mümkün olmadı.",
   "Updater.Status.ChecksumFailed": "Endirilmiş yeniləmə SHA-256 yoxlamasından keçmədi.",
   "Updater.Status.Unsupported": "Avtomatik yeniləmə üçün Windows, Linux və ya macOS x64 yığımı tələb olunur."
+,
+  "Trophies.Title": "Kuboklar",
+  "Trophies.None": "Bu oyunda kubok yoxdur.",
+  "Trophies.Hidden": "Gizli kubok",
+  "Trophies.HiddenDescription": "Bu kuboku göstərmək üçün klikləyin.",
+  "Trophies.Locked": "Hələ qazanılmayıb",
+  "Trophies.Progress": "{0} / {1} qazanıldı · {2}%",
+  "Trophies.Unlocked": "Kubok açıldı",
+  "Trophies.Grade.1": "Platin",
+  "Trophies.Grade.2": "Qızıl",
+  "Trophies.Grade.3": "Gümüş",
+  "Trophies.Grade.4": "Bürünc",
+  "Trophies.Filter.All": "Hamısı",
+  "Trophies.Filter.Earned": "Qazanılanlar",
+  "Trophies.Filter.Locked": "Kilidlənmiş",
+  "Trophies.Completed": "tamamlandı",
+  "Trophies.EarnedTotal": "qazanıldı",
+  "Trophies.HubSummary": "{0} / {1} kubok, {2} oyunda qazanıldı",
+  "Trophies.RevealHint": "Göstərmək üçün klikləyin",
+  "Trophies.Latest": "Son: {0} · {1}",
+  "Trophies.NoneYet": "Hələ heç bir kubok qazanılmayıb",
+  "Trophies.Sort.Recent": "Son",
+  "Trophies.Sort.Progress": "İrəliləyiş",
+  "Trophies.Sort.Name": "A–Z",
+  "Trophies.SearchWatermark": "Oyun axtar",
+  "Trophies.NoMatch": "Axtarışınıza uyğun oyun tapılmadı."
 }

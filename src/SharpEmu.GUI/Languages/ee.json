@@ -19,6 +19,7 @@
 
   "Page.Library": "Teek",
   "Page.Options": "Seaded",
+  "Page.Trophies": "Trofeed",
   "Page.GameCount.One": "1 mäng",
   "Page.GameCount.Other": "{0} mängu",
 
@@ -46,6 +47,10 @@
   "Library.Stat.Installed": "Paigaldatud",
   "Library.Stat.TitleId": "Title ID",
   "Common.Back": "Tagasi",
+
+  "Library.Music.Volume": "Mängumuusika helitugevus",
+  "Library.Music.Mute": "Vaigista mängumuusika",
+  "Library.Music.Unmute": "Lülita mängumuusika heli sisse",
 
   "Options.General": "Üldine",
   "Options.Logging": "Logimine",
@@ -106,6 +111,12 @@
   "Options.Env.BinkPlayback.Host": "Host (FFmpeg)",
   "Options.Env.BinkPlayback.Guest": "Guest",
   "Options.Env.BinkPlayback.Skip": "Jäta vahele",
+  "Options.Env.Group.Trophies": "Trofeed",
+  "Options.Env.TrophyTest.Label": "Testi trofee-teadet",
+  "Options.Env.TrophyTest.Desc": "Vali mäng ja trofee ning näita selle avamise teadet. Midagi ei avata.",
+  "Options.Env.TrophyTest.Show": "Näita teadet",
+  "Options.Env.TrophySound.Label": "Trofee-heli",
+  "Options.Env.TrophySound.Desc": "Esitab trofee avamisel lühikese helisignaali.",
 
   "Options.CpuEngine.Label": "CPU-mootor",
   "Options.CpuEngine.Desc": "Käitusmootor, mida kasutatakse mängukoodi käivitamiseks.",
@@ -245,4 +256,30 @@
   "Updater.Status.Failed": "Värskendusi ei saanud kontrollida.",
   "Updater.Status.ChecksumFailed": "Allalaaditud värskendus ei läbinud SHA-256 kontrolli.",
   "Updater.Status.Unsupported": "Automaatne värskendamine nõuab Windowsi, Linuxi või macOS-i x64 versiooni."
+,
+  "Trophies.Title": "Trofeed",
+  "Trophies.None": "Sellel mängul pole trofeesid.",
+  "Trophies.Hidden": "Peidetud trofee",
+  "Trophies.HiddenDescription": "Klõpsa selle trofee avaldamiseks.",
+  "Trophies.Locked": "Pole veel saadud",
+  "Trophies.Progress": "{0} / {1} saadud · {2}%",
+  "Trophies.Unlocked": "Trofee avatud",
+  "Trophies.Grade.1": "Plaatina",
+  "Trophies.Grade.2": "Kuld",
+  "Trophies.Grade.3": "Hõbe",
+  "Trophies.Grade.4": "Pronks",
+  "Trophies.Filter.All": "Kõik",
+  "Trophies.Filter.Earned": "Saadud",
+  "Trophies.Filter.Locked": "Lukus",
+  "Trophies.Completed": "lõpetatud",
+  "Trophies.EarnedTotal": "saadud",
+  "Trophies.HubSummary": "{0} {1}-st trofeest saadud {2} mängus",
+  "Trophies.RevealHint": "Klõpsa avaldamiseks",
+  "Trophies.Latest": "Viimane: {0} · {1}",
+  "Trophies.NoneYet": "Ühtegi trofeed pole veel saadud",
+  "Trophies.Sort.Recent": "Hiljutised",
+  "Trophies.Sort.Progress": "Edenemine",
+  "Trophies.Sort.Name": "A–Z",
+  "Trophies.SearchWatermark": "Otsi mänge",
+  "Trophies.NoMatch": "Sinu otsingule ei vasta ükski mäng."
 }

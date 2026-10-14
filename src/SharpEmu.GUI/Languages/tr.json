@@ -19,6 +19,7 @@
 
   "Page.Library": "Kütüphane",
   "Page.Options": "Ayarlar",
+  "Page.Trophies": "Kupalar",
   "Page.GameCount.One": "1 oyun",
   "Page.GameCount.Other": "{0} oyun",
 
@@ -45,6 +46,10 @@
   "Library.Stat.Installed": "Yüklü",
   "Library.Stat.TitleId": "Başlık kimliği",
   "Common.Back": "Geri",
+
+  "Library.Music.Volume": "Oyun müziği ses seviyesi",
+  "Library.Music.Mute": "Oyun müziğini kapat",
+  "Library.Music.Unmute": "Oyun müziğini aç",
 
   "Options.General": "Genel",
   "Options.Logging": "Günlükleme",
@@ -243,5 +248,37 @@
   "Options.Env.BinkPlayback.Desc": "Host, Bink videolarını FFmpeg köprüsüyle oynatır ancak bazı oyunlarda sorunlarla karşılaşabilir.\nGuest, oyun motorunun kendi kod çözücüsünü kullanır.\nSkip, Bink videolarını atlar; bu, geliştirmeyi kolaylaştırabilir.",
   "Options.Env.BinkPlayback.Host": "Host (FFmpeg)",
   "Options.Env.BinkPlayback.Guest": "Guest",
-  "Options.Env.BinkPlayback.Skip": "Atla"
+  "Options.Env.BinkPlayback.Skip": "Atla",
+  "Options.Env.Group.Trophies": "Kupalar",
+  "Options.Env.TrophyTest.Label": "Kupa bildirimini test et",
+  "Options.Env.TrophyTest.Desc": "Bir oyun ve bir kupa seç, ardından kilit açma bildirimini göster. Hiçbir şey kazanılmaz.",
+  "Options.Env.TrophyTest.Show": "Bildirimi göster",
+  "Options.Env.TrophySound.Label": "Kupa sesi",
+  "Options.Env.TrophySound.Desc": "Bir kupa açıldığında kısa bir ses çalar."
+,
+  "Trophies.Title": "Kupalar",
+  "Trophies.None": "Bu oyunun kupası yok.",
+  "Trophies.Hidden": "Gizli kupa",
+  "Trophies.HiddenDescription": "Bu kupayı göstermek için tıkla.",
+  "Trophies.Locked": "Henüz kazanılmadı",
+  "Trophies.Progress": "{0} / {1} kazanıldı · {2}%",
+  "Trophies.Unlocked": "Kupa açıldı",
+  "Trophies.Grade.1": "Platin",
+  "Trophies.Grade.2": "Altın",
+  "Trophies.Grade.3": "Gümüş",
+  "Trophies.Grade.4": "Bronz",
+  "Trophies.Filter.All": "Tümü",
+  "Trophies.Filter.Earned": "Kazanılanlar",
+  "Trophies.Filter.Locked": "Kilitli",
+  "Trophies.Completed": "tamamlandı",
+  "Trophies.EarnedTotal": "kazanıldı",
+  "Trophies.HubSummary": "{0} / {1} kupa, {2} oyunda kazanıldı",
+  "Trophies.RevealHint": "Göstermek için tıkla",
+  "Trophies.Latest": "Son: {0} · {1}",
+  "Trophies.NoneYet": "Henüz kupa kazanılmadı",
+  "Trophies.Sort.Recent": "Son",
+  "Trophies.Sort.Progress": "İlerleme",
+  "Trophies.Sort.Name": "A–Z",
+  "Trophies.SearchWatermark": "Oyun ara",
+  "Trophies.NoMatch": "Aramanızla eşleşen oyun yok."
 }

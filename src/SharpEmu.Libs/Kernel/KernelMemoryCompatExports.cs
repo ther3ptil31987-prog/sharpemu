@@ -133,6 +133,8 @@ public static partial class KernelMemoryCompatExports
     private static long _nextFileDescriptor = 2;
     private static string _applicationTitleId = "UNKNOWN";
 
+    internal static string ApplicationTitleId => Volatile.Read(ref _applicationTitleId);
+
     public static void ConfigureApplicationInfo(string? titleId)
     {
         var value = string.IsNullOrWhiteSpace(titleId) ? "UNKNOWN" : titleId.Trim();

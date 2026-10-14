@@ -19,6 +19,7 @@
 
   "Page.Library": "Библиотека",
   "Page.Options": "Настройки",
+  "Page.Trophies": "Трофеи",
   "Page.GameCount.One": "1 игра",
   "Page.GameCount.Other": "Игр: {0}",
 
@@ -44,6 +45,10 @@
   "Library.Stat.Installed": "Установлено",
   "Library.Stat.TitleId": "ID игры",
   "Common.Back": "Назад",
+
+  "Library.Music.Volume": "Громкость музыки игры",
+  "Library.Music.Mute": "Выключить музыку игры",
+  "Library.Music.Unmute": "Включить музыку игры",
 
   "Options.General": "Основные",
   "Options.Logging": "Логгирование",
@@ -102,6 +107,12 @@
   "Options.Env.BinkPlayback.Host": "Host (FFmpeg)",
   "Options.Env.BinkPlayback.Guest": "Guest",
   "Options.Env.BinkPlayback.Skip": "Пропустить",
+  "Options.Env.Group.Trophies": "Трофеи",
+  "Options.Env.TrophyTest.Label": "Проверить уведомление о трофее",
+  "Options.Env.TrophyTest.Desc": "Выберите игру и трофей, затем покажите уведомление о его получении. Ничего не будет получено.",
+  "Options.Env.TrophyTest.Show": "Показать уведомление",
+  "Options.Env.TrophySound.Label": "Звук трофеев",
+  "Options.Env.TrophySound.Desc": "Воспроизводит короткий сигнал при получении трофея.",
 
   "Options.CpuEngine.Label": "Движок ЦП",
   "Options.CpuEngine.Desc": "Движок выполнения, используемый для запуска игрового кода.",
@@ -244,4 +255,30 @@
   "Updater.Status.Unsupported": "Автоматическое обновление требует сборку Windows, Linux или macOS x64.",
 
   "Updater.Status.ChecksumFailed": "Скачанное обновление не прошло проверку SHA-256."
+,
+  "Trophies.Title": "Трофеи",
+  "Trophies.None": "В этой игре нет трофеев.",
+  "Trophies.Hidden": "Скрытый трофей",
+  "Trophies.HiddenDescription": "Нажмите, чтобы раскрыть этот трофей.",
+  "Trophies.Locked": "Ещё не получен",
+  "Trophies.Progress": "{0} / {1} получено · {2}%",
+  "Trophies.Unlocked": "Трофей получен",
+  "Trophies.Grade.1": "Платина",
+  "Trophies.Grade.2": "Золото",
+  "Trophies.Grade.3": "Серебро",
+  "Trophies.Grade.4": "Бронза",
+  "Trophies.Filter.All": "Все",
+  "Trophies.Filter.Earned": "Полученные",
+  "Trophies.Filter.Locked": "Заблокированные",
+  "Trophies.Completed": "завершено",
+  "Trophies.EarnedTotal": "получено",
+  "Trophies.HubSummary": "Получено {0} из {1} трофеев в {2} играх",
+  "Trophies.RevealHint": "Нажмите, чтобы раскрыть",
+  "Trophies.Latest": "Последний: {0} · {1}",
+  "Trophies.NoneYet": "Пока нет полученных трофеев",
+  "Trophies.Sort.Recent": "Недавние",
+  "Trophies.Sort.Progress": "Прогресс",
+  "Trophies.Sort.Name": "A–Z",
+  "Trophies.SearchWatermark": "Поиск игр",
+  "Trophies.NoMatch": "Ни одна игра не соответствует запросу."
 }

@@ -135,6 +135,11 @@ public readonly record struct Gen5PixelOutputBinding(
 
     private readonly uint? _exportTarget;
 
+    // The blend reads source alpha but the component mapping moves the shader's alpha out of
+    // the host alpha channel: the program also writes that alpha to the dual-source output
+    // (Location 0, Index 1) so the pipeline can blend with SRC1_ALPHA.
+    public bool DualSourceAlpha { get; init; }
+
     // The EXP MRT target that feeds this slot. It differs from the slot when the pixel
     // program skips targets, because the hardware packs color exports into the slots
     // that CB_SHADER_MASK enables.
@@ -143,6 +148,10 @@ public readonly record struct Gen5PixelOutputBinding(
         get => _exportTarget ?? GuestSlot;
         init => _exportTarget = value;
     }
+
+    // The fragment output index: 1 is the second source of dual-source blending, which
+    // shares its location with the first and is not a render target.
+    public uint Index { get; init; }
 }
 
 public readonly record struct Gen5ComputeSystemRegisters(
