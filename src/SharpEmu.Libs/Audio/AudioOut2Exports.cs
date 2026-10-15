@@ -110,6 +110,9 @@ public static class AudioOut2Exports
     private static readonly ConcurrentDictionary<ulong, ContextState> Contexts = new();
     private static readonly ConcurrentDictionary<ulong, PortState> Ports = new();
 
+    // Guest thread -> the context it last pushed audio into (see ProducerSleepMicroseconds).
+    private static readonly ConcurrentDictionary<ulong, ContextState> Producers = new();
+
     private sealed class ContextState
     {
         private readonly object _paceGate = new();
@@ -135,6 +138,9 @@ public static class AudioOut2Exports
         // Set once a grain reaches a host device: the device queue, not the grain clock, is then
         // what holds the context's queued audio.
         public volatile bool DevicePaced;
+
+        // The host stream the context's grains were last submitted to, read without the backend lock.
+        public volatile IHostAudioStream? DeviceBackend;
 
         // The output holds QueueDepth grains: a grain can be queued as soon as the grain
         // QueueDepth-1 ahead of it starts playing, so a title may render that far ahead of real
@@ -419,6 +425,12 @@ public static class AudioOut2Exports
     {
         var contextHandle = ctx[CpuRegister.Rdi];
         Contexts.TryRemove(contextHandle, out _);
+        foreach (var (producer, context) in Producers)
+        {
+            if (context.Handle == contextHandle)
+                Producers.TryRemove(new KeyValuePair<ulong, ContextState>(producer, context));
+        }
+
         foreach (var (portHandle, port) in Ports)
         {
             if (port.ContextHandle != contextHandle ||
@@ -492,6 +504,12 @@ public static class AudioOut2Exports
         if (!Contexts.TryGetValue(handle, out var context))
         {
             return SetReturn(ctx, 0);
+        }
+
+        if (GuestThreadExecution.CurrentGuestThreadHandle is var producer and not 0 &&
+            (!Producers.TryGetValue(producer, out var lastContext) || !ReferenceEquals(lastContext, context)))
+        {
+            Producers[producer] = context;
         }
 
         // Host Submit already blocks on the output queue; software pacing covers grains with nothing
@@ -1276,6 +1294,38 @@ public static class AudioOut2Exports
     internal static double DeviceSlotFreeThreshold(uint grainSamples, uint frequency, uint queueDepth) =>
         DeviceCushionMilliseconds + (grainSamples * 1000.0 / frequency * Math.Max((long)queueDepth - 1, 0));
 
+    /// <summary>
+    /// Halves a usleep taken by a thread that feeds an AudioOut2 context while the device runs short,
+    /// so a producer paced by fixed sleeps (CRI's mixer: 5 ms per 5.33 ms grain) can catch up.
+    /// </summary>
+    public static ulong ProducerSleepMicroseconds(ulong microseconds)
+    {
+        if (!Producers.TryGetValue(GuestThreadExecution.CurrentGuestThreadHandle, out var context) ||
+            !context.DevicePaced ||
+            context.DeviceBackend is not { } backend ||
+            !Contexts.TryGetValue(context.Handle, out var live) ||
+            !ReferenceEquals(live, context))
+        {
+            return microseconds;
+        }
+
+        return ShortenedProducerSleep(microseconds, context.GrainSamples, context.Frequency, backend.QueuedMilliseconds);
+    }
+
+    // Only the sleep between grains is shortened (at most two grains long),
+    // and only while the device reports less than its cushion;
+    // -1 means it cannot report, and the sleep is kept.
+    internal static ulong ShortenedProducerSleep(ulong microseconds, uint grainSamples, uint frequency,
+        int queuedMilliseconds)
+    {
+        var grainMilliseconds = grainSamples * 1000.0 / frequency;
+        return queuedMilliseconds >= 0 &&
+            queuedMilliseconds < DeviceCushionMilliseconds - grainMilliseconds &&
+            microseconds <= grainMilliseconds * 2000.0
+            ? microseconds / 2
+            : microseconds;
+    }
+
     private static void WaitForDeviceSlot(ContextState context)
     {
         var backend = ResolveContextBackend(context, out _);
@@ -1402,6 +1452,8 @@ public static class AudioOut2Exports
                     TraceSubmitSkipped(context, frames, "no-backend");
                     return false;
                 }
+
+                context.DeviceBackend = backend;
 
                 var n = Interlocked.Increment(ref _submitTraceCount);
                 if (n <= 8 || n % 500 == 0)

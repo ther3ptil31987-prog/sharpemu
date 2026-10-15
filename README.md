@@ -56,7 +56,9 @@ This project is developed purely for research and educational purposes. There ar
 SharpEmu focuses exclusively on the PlayStation 5.  
 Our goal is **not** to emulate PS4 games, as there is already an excellent emulator dedicated to that platform: **ShadPS4**.
 
-## Games Tested
+## Selected Games
+
+A selection of games tested with SharpEmu. This is not an exhaustive list of supported titles.
 
 |               Demon's Souls Remake                   |                     ASTRO BOT                        |
 | :-----------------------------------------------------------: | :--------------------------------------------------------------------------------------------: |
@@ -69,6 +71,10 @@ Our goal is **not** to emulate PS4 games, as there is already an excellent emula
 |                  God of War: Sons of Sparta                    |                 Tomb Raider V Remastered                    |
 | :------------------------------------------------------------------------: | :------------------------------------------------------------------: |
 | ![GoW SOS](./.github/images/gow-sos.jpg) | ![Tomb Raider V](./.github/images/tomb-raider-v-remastered.jpg) |
+
+<p align="center">
+  <a href="https://sharpemu.app/compatibility/" target="_blank"><strong><i>And more..</i></strong></a>
+</p>
 
 ## Status
 

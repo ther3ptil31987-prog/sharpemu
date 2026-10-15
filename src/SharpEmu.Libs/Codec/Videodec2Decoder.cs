@@ -61,6 +61,7 @@ internal sealed unsafe class Videodec2Decoder : IDisposable
     private int _swsSourceHeight;
     private AVPixelFormat _swsSourceFormat = AVPixelFormat.AV_PIX_FMT_NONE;
     private bool _disposed;
+    private bool _disposing;
 
     private readonly Channel<byte[]?> _workChannel =
         Channel.CreateBounded<byte[]?>(new BoundedChannelOptions(WorkQueueCapacity)
@@ -82,7 +83,7 @@ internal sealed unsafe class Videodec2Decoder : IDisposable
     private readonly Thread _worker;
     private readonly Thread _scheduler;
 
-    // Cancelled (not just completed) on Dispose so both loops stop promptly instead of draining a backlog.
+    // Cancelled on Dispose so both loops stop within one access unit; disposed only after both have joined.
     private readonly CancellationTokenSource _workerCts = new();
 
     private readonly object _protocolGate = new();
@@ -205,7 +206,15 @@ internal sealed unsafe class Videodec2Decoder : IDisposable
 
     public bool EnqueueAccessUnit(byte[] accessUnit)
     {
-        return _workChannel.Writer.TryWrite(accessUnit);
+        lock (_gate)
+        {
+            if (_disposed || _disposing)
+            {
+                return false;
+            }
+
+            return _workChannel.Writer.TryWrite(accessUnit);
+        }
     }
 
     /// <summary>Queues an end-of-stream drain: flush FFmpeg and emit one more buffered picture, if any.</summary>
@@ -794,24 +803,29 @@ internal sealed unsafe class Videodec2Decoder : IDisposable
     {
         lock (_gate)
         {
-            if (_disposed)
+            if (_disposed || _disposing)
             {
                 return;
             }
 
-            _disposed = true;
+            _disposing = true;
         }
 
-        // Outside _gate: the worker needs it to finish whatever item it's mid-call on.
-        _workerCts.Cancel();
+        // Stop accepting access units and drop the work still queued: a title deletes its
+        // decoder to end or skip a movie, and playing out the backlog at the movie's frame rate
+        // would hold it for seconds. Both loops observe the cancellation within one access unit;
+        // they are joined without a timeout so FFmpeg is never freed under a running worker.
         _workChannel.Writer.TryComplete();
         _frameQueue.Writer.TryComplete();
-        _worker.Join(TimeSpan.FromSeconds(2));
-        _scheduler.Join(TimeSpan.FromSeconds(2));
+        _workerCts.Cancel();
+        _worker.Join();
+        _scheduler.Join();
         _workerCts.Dispose();
 
         lock (_gate)
         {
+            _disposed = true;
+            _disposing = false;
             if (_swsContext != null)
             {
                 ffmpeg.sws_freeContext(_swsContext);

@@ -243,10 +243,6 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 
 	private nint _queryPerformanceCounterAddress;
 
-	private nint _switchToThreadAddress;
-
-	private nint _sleepAddress;
-
 	private int _tlsPatchStubOffset;
 
 	private nint _unresolvedReturnStub;
@@ -1152,12 +1148,6 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 			{
 				throw new InvalidOperationException("Failed to resolve kernel32!QueryPerformanceCounter");
 			}
-			_switchToThreadAddress = kernel32 != 0 ? GetProcAddress(kernel32, "SwitchToThread") : 0;
-			_sleepAddress = kernel32 != 0 ? GetProcAddress(kernel32, "Sleep") : 0;
-			if (_switchToThreadAddress == 0 || _sleepAddress == 0)
-			{
-				throw new InvalidOperationException("Failed to resolve kernel32 thread timing functions");
-			}
 			_setEventAddress = kernel32 != 0 ? GetProcAddress(kernel32, "SetEvent") : 0;
 		}
 		else
@@ -1166,8 +1156,6 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 			// not need to change per platform.
 			_tlsGetValueAddress = PosixHostStubs.TlsGetValueStubAddress;
 			_queryPerformanceCounterAddress = PosixHostStubs.QueryPerformanceCounterStubAddress;
-			_switchToThreadAddress = PosixHostStubs.SwitchToThreadStubAddress;
-			_sleepAddress = PosixHostStubs.SleepStubAddress;
 		}
 		_tlsBaseAddress = (nint)VirtualAlloc(null, 4096u, 12288u, 4u);
 		if (_tlsBaseAddress == 0)
@@ -1520,8 +1508,9 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 			return false;
 		}
 
-		if (nid == "1jfXLRVzisc" &&
-			string.Equals(Environment.GetEnvironmentVariable("SHARPEMU_LOG_USLEEP"), "1", StringComparison.Ordinal))
+		// sceKernelUsleep stays on the HLE export: a native stub can only round to Win32 Sleep milliseconds,
+		// which overshoots every wait by most of a scheduler tick and starves loops paced by usleep.
+		if (nid == "1jfXLRVzisc")
 		{
 			address = 0;
 			return false;
@@ -1544,31 +1533,6 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 				0xFF, 0xD0,
 				0x48, 0x8B, 0x44, 0x24, 0x20,
 				0x48, 0x83, 0xC4, 0x28,
-				0xC3,
-			],
-			"1jfXLRVzisc" =>
-			[
-				0x48, 0x85, 0xFF,
-				0x74, 0x1D,
-				0x48, 0x81, 0xFF, 0xE8, 0x03, 0x00, 0x00,
-				0x73, 0x17,
-				0x48, 0x83, 0xEC, 0x28,
-				0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-				0xFF, 0xD0,
-				0x48, 0x83, 0xC4, 0x28,
-				0x31, 0xC0,
-				0xC3,
-				0x48, 0x89, 0xF8,
-				0x48, 0x05, 0xE7, 0x03, 0x00, 0x00,
-				0x31, 0xD2,
-				0xB9, 0xE8, 0x03, 0x00, 0x00,
-				0x48, 0xF7, 0xF1,
-				0x89, 0xC1,
-				0x48, 0x83, 0xEC, 0x28,
-				0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-				0xFF, 0xD0,
-				0x48, 0x83, 0xC4, 0x28,
-				0x31, 0xC0,
 				0xC3,
 			],
 			"j4ViWNHEgww" =>
@@ -1793,11 +1757,6 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		if (nid == "fgxnMeTNUtY")
 		{
 			*(nint*)((byte*)memory + 11) = _queryPerformanceCounterAddress;
-		}
-		else if (nid == "1jfXLRVzisc")
-		{
-			*(nint*)((byte*)memory + 20) = _switchToThreadAddress;
-			*(nint*)((byte*)memory + 64) = _sleepAddress;
 		}
 		uint oldProtect = 0;
 		if (!VirtualProtect(memory, intrinsicAllocationSize, 32u, &oldProtect))

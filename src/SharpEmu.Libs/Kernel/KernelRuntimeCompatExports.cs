@@ -123,6 +123,7 @@ public static class KernelRuntimeCompatExports
             // Precise sleep: rounding microseconds up to Thread.Sleep
             // milliseconds (which itself overshoots by a scheduler quantum)
             // hard-caps games that pace their frame loop with usleep.
+            micros = Audio.AudioOut2Exports.ProducerSleepMicroseconds(micros);
             HostTiming.SleepMicroseconds((long)Math.Min(micros, long.MaxValue));
         }
 
