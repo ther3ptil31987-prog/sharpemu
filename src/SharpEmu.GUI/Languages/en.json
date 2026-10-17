@@ -62,6 +62,7 @@
   "Library.Empty.AddFolder": "＋ Add game folder",
 
   "Library.Loading": "Loading library…",
+  "Library.ScanningFolder": "Scanning folder…",
   "Library.Stat.Version": "Version",
   "Library.Stat.Installed": "Installed",
   "Library.Stat.TitleId": "Title ID",
@@ -275,6 +276,7 @@
   "Library.Context.Trophies": "Trophies…",
   "Trophies.Title": "Trophies",
   "Trophies.None": "This game has no trophies.",
+  "Trophies.Loading": "Loading trophies…",
   "Trophies.Hidden": "Hidden trophy",
   "Trophies.HiddenDescription": "Click to reveal this trophy.",
   "Trophies.Locked": "Not earned yet",

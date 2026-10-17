@@ -55,5 +55,9 @@ Control theme for the shared launcher settings row.
         </Border>
       </ControlTemplate>
     </Setter>
+    <Style Selector="^.controllerFocus /template/ Border#PART_RowSurface">
+      <Setter Property="Background" Value="#16FFFFFF" />
+      <Setter Property="BorderBrush" Value="#C8FFFFFF" />
+    </Style>
   </ControlTheme>
 </ResourceDictionary>

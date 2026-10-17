@@ -123,6 +123,10 @@ SPDX-License-Identifier: GPL-2.0-or-later
               Margin="-32,-24,-32,-20"
               Background="{StaticResource GameOptionsMenuBrush}"
               IsVisible="False" />
+      <local:TrophyBackdrop x:Name="TrophyBackdropHost"
+                            Grid.RowSpan="4"
+                            Margin="-32,-24,-32,-20"
+                            IsVisible="False" />
 
       <!-- Library / Options page switcher, with the library toolbar sharing
            the same row on the right. Plain buttons (not TabItem) so there is
@@ -473,12 +477,38 @@ SPDX-License-Identifier: GPL-2.0-or-later
           <StackPanel x:Name="LoadingState" Grid.RowSpan="2"
                       Spacing="14" HorizontalAlignment="Center" VerticalAlignment="Center"
                       IsVisible="False">
-            <ProgressBar IsIndeterminate="True" Width="180" Height="3" />
+            <ProgressBar IsIndeterminate="{Binding $parent[StackPanel].IsVisible}" Width="180" Height="3" />
             <TextBlock x:Name="LoadingStateText"
                        Text="{Binding [Library.Loading], Source={x:Static local:Localization.Instance}}"
                        FontSize="13"
                        Foreground="{StaticResource MutedBrush}" HorizontalAlignment="Center" />
           </StackPanel>
+
+          <Border x:Name="ScanningIndicator"
+                  Grid.RowSpan="2"
+                  ZIndex="10"
+                  HorizontalAlignment="Center"
+                  VerticalAlignment="Bottom"
+                  Margin="0,0,0,24"
+                  Padding="18,10"
+                  CornerRadius="18"
+                  Background="#F01B1B1B"
+                  BorderBrush="{StaticResource CardBorderBrush}"
+                  BorderThickness="1"
+                  BoxShadow="0 6 24 0 #80000000"
+                  IsHitTestVisible="False"
+                  IsVisible="False">
+            <StackPanel Orientation="Horizontal" Spacing="12">
+              <ProgressBar IsIndeterminate="{Binding $parent[Border].IsVisible}"
+                           Width="90"
+                           Height="3"
+                           VerticalAlignment="Center" />
+              <TextBlock Text="{Binding [Library.ScanningFolder], Source={x:Static local:Localization.Instance}}"
+                         FontSize="13"
+                         Foreground="{StaticResource SecondaryTextBrush}"
+                         VerticalAlignment="Center" />
+            </StackPanel>
+          </Border>
         </Grid>
 
         <!-- Contextual per-game settings use the same layered reveal as the
@@ -1140,7 +1170,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
         </Border>
         </Grid>
 
-        <local:TrophyPage x:Name="TrophyPageHost" IsVisible="False" Margin="32,6,32,16" />
+        <local:TrophyPage x:Name="TrophyPageHost" IsVisible="False" Margin="32,14,32,16" />
 
         <!-- Options page: stable local navigation keeps each settings group
              focused while preserving every setting from the current launcher -->
@@ -1659,6 +1689,8 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
                   <Border Classes="optionsGroup">
                     <StackPanel Spacing="8">
+                      <Border Classes="optionsGroupDivider" />
+
                       <TextBlock Classes="optionsGroupHeader" Text="{Binding [Options.Env.Group.Debug], Source={x:Static local:Localization.Instance}}" />
                       <local:SettingRow x:Name="PerformanceProfileRow" Classes="optionRow" LabelFontFamily="Consolas,monospace" Label="SHARPEMU_PROFILE_PERFORMANCE"
                                         Description="{Binding [Options.Env.PerformanceProfile.Desc], Source={x:Static local:Localization.Instance}}">

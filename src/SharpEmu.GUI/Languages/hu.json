@@ -40,6 +40,7 @@
   "Library.Empty.AddFolder": "＋ Játékmappa hozzáadása",
 
   "Library.Loading": "Könyvtár betöltése",
+  "Library.ScanningFolder": "Mappa átvizsgálása…",
   "Library.Stat.Version": "Verzió",
   "Library.Stat.Installed": "Telepítve",
   "Library.Stat.TitleId": "Címazonosító",
@@ -255,6 +256,7 @@
 ,
   "Trophies.Title": "Trófeák",
   "Trophies.None": "Ennek a játéknak nincsenek trófeái.",
+  "Trophies.Loading": "Trófeák betöltése…",
   "Trophies.Hidden": "Rejtett trófea",
   "Trophies.HiddenDescription": "Kattints a trófea megjelenítéséhez.",
   "Trophies.Locked": "Még nem szerezted meg",

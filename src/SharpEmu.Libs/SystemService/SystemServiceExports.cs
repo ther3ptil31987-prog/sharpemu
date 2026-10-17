@@ -37,6 +37,8 @@ public static class SystemServiceExports
         return ctx.SetReturn(OrbisSystemServiceErrorNoEvent);
     }
 
+    internal static int SystemLanguage => Volatile.Read(ref _systemLanguage);
+
     public static void ConfigureApplicationInfo(string? titleId, int systemLanguage = 1)
     {
         _mainAppTitleId = string.IsNullOrWhiteSpace(titleId) ? null : titleId.Trim();

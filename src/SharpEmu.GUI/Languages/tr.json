@@ -42,6 +42,7 @@
   "Library.Empty.AddFolder": "＋ Oyun klasörü ekle",
 
   "Library.Loading": "Kütüphane yükleniyor…",
+  "Library.ScanningFolder": "Klasör taranıyor…",
   "Library.Stat.Version": "Sürüm",
   "Library.Stat.Installed": "Yüklü",
   "Library.Stat.TitleId": "Başlık kimliği",
@@ -258,6 +259,7 @@
 ,
   "Trophies.Title": "Kupalar",
   "Trophies.None": "Bu oyunun kupası yok.",
+  "Trophies.Loading": "Kupalar yükleniyor…",
   "Trophies.Hidden": "Gizli kupa",
   "Trophies.HiddenDescription": "Bu kupayı göstermek için tıkla.",
   "Trophies.Locked": "Henüz kazanılmadı",

@@ -40,6 +40,7 @@
   "Library.Empty.AddFolder": "＋ Tilføj spilmappe",
 
   "Library.Loading": "Indlæser bibliotek…",
+  "Library.ScanningFolder": "Scanner mappen…",
   "Library.Stat.Version": "Version",
   "Library.Stat.Installed": "Installeret",
   "Library.Stat.TitleId": "Titel-id",
@@ -254,6 +255,7 @@
 ,
   "Trophies.Title": "Trofæer",
   "Trophies.None": "Dette spil har ingen trofæer.",
+  "Trophies.Loading": "Indlæser trofæer…",
   "Trophies.Hidden": "Skjult trofæ",
   "Trophies.HiddenDescription": "Klik for at afsløre dette trofæ.",
   "Trophies.Locked": "Ikke opnået endnu",

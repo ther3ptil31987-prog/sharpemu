@@ -27,6 +27,7 @@
   "Library.Empty.AddFolder": "＋ Oyun qovluğu əlavə et",
 
   "Library.Loading": "Kitabxana yüklənir…",
+  "Library.ScanningFolder": "Qovluq skan edilir…",
   "Library.Stat.Version": "Versiya",
   "Library.Stat.Installed": "Quraşdırılıb",
   "Library.Stat.TitleId": "Oyunun ID-si",
@@ -254,6 +255,7 @@
 ,
   "Trophies.Title": "Kuboklar",
   "Trophies.None": "Bu oyunda kubok yoxdur.",
+  "Trophies.Loading": "Kuboklar yüklənir…",
   "Trophies.Hidden": "Gizli kubok",
   "Trophies.HiddenDescription": "Bu kuboku göstərmək üçün klikləyin.",
   "Trophies.Locked": "Hələ qazanılmayıb",

@@ -42,6 +42,7 @@
   "Library.Empty.AddFolder": "＋ Ajouter un dossier de jeux",
 
   "Library.Loading": "Chargement de la bibliothèque…",
+  "Library.ScanningFolder": "Analyse du dossier…",
   "Library.Stat.Version": "Version",
   "Library.Stat.Installed": "Installé",
   "Library.Stat.TitleId": "ID du titre",
@@ -251,6 +252,7 @@
   "Library.Context.Trophies": "Trophées…",
   "Trophies.Title": "Trophées",
   "Trophies.None": "Ce jeu n’a pas de trophées.",
+  "Trophies.Loading": "Chargement des trophées…",
   "Trophies.Hidden": "Trophée caché",
   "Trophies.HiddenDescription": "Cliquez pour révéler ce trophée.",
   "Trophies.Locked": "Pas encore obtenu",

@@ -201,11 +201,14 @@ public partial class MainWindow : Window
 
     // Controller navigation state.
     private readonly DispatcherTimer _gamepadTimer;
+    private const int MaxDecodedBackgrounds = 3;
+    private readonly List<GameEntry> _decodedBackgrounds = [];
+    private int _folderScansInFlight;
     private HostGamepadButtons _previousPadButtons;
-    private long _navLeftNextAt;
-    private long _navRightNextAt;
-    private long _navUpNextAt;
-    private long _navDownNextAt;
+    private NavigationRepeat _navLeftNextAt;
+    private NavigationRepeat _navRightNextAt;
+    private NavigationRepeat _navUpNextAt;
+    private NavigationRepeat _navDownNextAt;
 
     //Github http client for latest commit
     private static readonly HttpClient GithubHttpClient = CreateGithubHttpClient();
@@ -446,9 +449,10 @@ public partial class MainWindow : Window
                 EnvDisableVkImplicitLayersToggle.IsChecked == true);
 
         SdlLauncherGamepad.EnsureStarted();
+        InitializeController();
         _gamepadTimer = new DispatcherTimer
         {
-            Interval = TimeSpan.FromMilliseconds(50),
+            Interval = TimeSpan.FromMilliseconds(16),
         };
         _gamepadTimer.Tick += (_, _) => PollGamepad();
         _gamepadTimer.Start();
@@ -513,6 +517,7 @@ public partial class MainWindow : Window
             CloseGameSettings(restoreLibrary: false);
         }
 
+        var previousPage = _activePageIndex;
         _activePageIndex = index;
         SetActiveClass(LibraryTabButton, index == 0);
         SetActiveClass(OptionsTabButton, index == 1);
@@ -520,8 +525,10 @@ public partial class MainWindow : Window
         TrophyPageHost.IsVisible = index == 2;
         LibraryPage.IsVisible = index == 0;
         LibraryToolbar.IsVisible = index == 0;
-        OptionsPageSurface.IsVisible = index == 1;
+        OptionsPageSurface.IsVisible = index is 1 or 2;
+        TrophyBackdropHost.IsVisible = index == 2;
         OptionsPage.IsVisible = index == 1;
+        AnimatePageChange(previousPage, index);
         UpdateEmbeddedConsoleVisibility();
 
         if (index == 1)
@@ -691,6 +698,11 @@ public partial class MainWindow : Window
             var active = index == section;
             SetActiveClass(buttons[index], active);
             SetOptionsPanelInteraction(panels[index], active);
+        }
+
+        if (panels[section] == OptionsEnvironmentPanel)
+        {
+            RefreshTrophyTestGames();
         }
     }
 
@@ -895,16 +907,17 @@ public partial class MainWindow : Window
         var shown = Array.IndexOf(shownOrder, _activePageIndex);
         if ((shoulderPressed & HostGamepadButtons.L1) != 0)
         {
-            SetActivePage(shownOrder[Math.Max(0, shown - 1)]);
+            ShowPageFromController(shownOrder[Math.Max(0, shown - 1)]);
         }
 
         if ((shoulderPressed & HostGamepadButtons.R1) != 0)
         {
-            SetActivePage(shownOrder[Math.Min(shownOrder.Length - 1, shown + 1)]);
+            ShowPageFromController(shownOrder[Math.Min(shownOrder.Length - 1, shown + 1)]);
         }
 
         if (_activePageIndex != 0 || _isGameSettingsOpen)
         {
+            PollControllerPage(pad, pad.Buttons & ~_previousPadButtons);
             _previousPadButtons = pad.Buttons;
             return;
         }
@@ -975,30 +988,33 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// Edge-triggered with hold-to-repeat: fires on press, then repeats
-    /// after 400ms at 130ms intervals while held.
+    /// after 300ms, speeding up from 60ms to one step per frame while held.
     /// </summary>
-    private static bool ShouldNavigate(bool held, ref long nextAt, long now)
+    private static bool ShouldNavigate(bool held, ref NavigationRepeat repeat, long now)
     {
         if (!held)
         {
-            nextAt = 0;
+            repeat = default;
             return false;
         }
 
-        if (nextAt == 0)
+        if (repeat.NextAt == 0)
         {
-            nextAt = now + 400;
+            repeat = new NavigationRepeat(now + 300, now);
             return true;
         }
 
-        if (now >= nextAt)
+        if (now >= repeat.NextAt)
         {
-            nextAt = now + 130;
+            var interval = Math.Max(16, 60 - (now - repeat.HeldSince - 300) / 15);
+            repeat = repeat with { NextAt = now + interval };
             return true;
         }
 
         return false;
     }
+
+    private record struct NavigationRepeat(long NextAt, long HeldSince);
 
     private int LibraryRowStep()
     {
@@ -1822,7 +1838,7 @@ public partial class MainWindow : Window
             _settings.Save();
         }
 
-        await RescanLibraryAsync();
+        await RescanLibraryAsync(addingFolder: true);
     }
 
     private void OnLibraryRefreshRequested(object? sender, EventArgs args)
@@ -1876,7 +1892,7 @@ public partial class MainWindow : Window
         LoadGameDetailsInBackground(cached, cached);
     }
 
-    private async Task RescanLibraryAsync(bool showProgress = true)
+    private async Task RescanLibraryAsync(bool showProgress = true, bool addingFolder = false)
     {
         Dispatcher.UIThread.VerifyAccess();
 
@@ -1890,20 +1906,47 @@ public partial class MainWindow : Window
             EmptyState.IsVisible = false;
             LoadingState.IsVisible = true;
         }
+        else if (addingFolder)
+        {
+            ScanningIndicator.IsVisible = true;
+            FadeTo(ScanningIndicator, 1, fromZero: true);
+        }
 
-        var games = await Task.Run(() => ScanFolders(folders, excluded));
+        if (addingFolder)
+        {
+            _folderScansInFlight++;
+        }
+
+        List<GameEntry> games;
+        try
+        {
+            games = await Task.Run(() => ScanFolders(folders, excluded));
+        }
+        finally
+        {
+            if (addingFolder && --_folderScansInFlight == 0)
+            {
+                ScanningIndicator.IsVisible = false;
+            }
+        }
+
         if (_isClosing || scanGeneration != Volatile.Read(ref _libraryScanGeneration))
         {
             return;
         }
 
         Dispatcher.UIThread.VerifyAccess();
+        var known = new HashSet<GameEntry>(_allGames);
         var reconciliation = GameLibraryReconciler.Reconcile(_allGames, games);
         _allGames.Clear();
         _allGames.AddRange(reconciliation.Games);
         RefreshVisibleGames(reconciliation.BackgroundsChanged);
         LoadingState.IsVisible = false;
-        LoadGameDetailsInBackground(reconciliation.CoversToLoad, reconciliation.Games);
+        LoadGameDetailsInBackground(
+            reconciliation.CoversToLoad,
+            showProgress
+                ? reconciliation.Games
+                : reconciliation.Games.Where(game => !known.Contains(game) || game.SizeBytes <= 0).ToArray());
         UpdateDiscordPresence();
         GameLibraryCache.Save(folders, reconciliation.Games);
     }
@@ -1918,6 +1961,10 @@ public partial class MainWindow : Window
         IReadOnlyList<GameEntry> gamesToMeasure)
     {
         var generation = ++_detailLoadGeneration;
+        coversToLoad = coversToLoad
+            .Concat(_allGames.Where(game => game.Cover is null && game.CoverPath is not null))
+            .Distinct()
+            .ToArray();
         _ = Task.Run(() =>
         {
             // Covers first: they are cheap and the most visible, so the grid
@@ -1937,8 +1984,11 @@ public partial class MainWindow : Window
 
                 try
                 {
-                    using var stream = File.OpenRead(requestedCoverPath);
-                    var bitmap = Bitmap.DecodeToWidth(stream, 312);
+                    if (GameArtCache.Load(requestedCoverPath, 312) is not { } bitmap)
+                    {
+                        continue;
+                    }
+
                     Dispatcher.UIThread.Post(() =>
                     {
                         if (generation == _detailLoadGeneration
@@ -2289,8 +2339,8 @@ public partial class MainWindow : Window
             }
 
             // A held direction must not reopen the picker after it closes.
-            _navLeftNextAt = long.MaxValue;
-            _navRightNextAt = long.MaxValue;
+            _navLeftNextAt = new NavigationRepeat(long.MaxValue, 0);
+            _navRightNextAt = new NavigationRepeat(long.MaxValue, 0);
             StartAddFolderFromTile();
             return;
         }
@@ -2909,11 +2959,12 @@ public partial class MainWindow : Window
             try
             {
                 var path = game.BackgroundPath;
-                game.Background = await Task.Run(() =>
+                game.Background = await Task.Run(() => GameArtCache.Load(path, 1600));
+                if (game.Background is null)
                 {
-                    using var stream = File.OpenRead(path);
-                    return Bitmap.DecodeToWidth(stream, 1600);
-                });
+                    ShowDefaultBackdrop();
+                    return;
+                }
             }
             catch (Exception)
             {
@@ -2926,6 +2977,27 @@ public partial class MainWindow : Window
         {
             BackdropImage.Source = game.Background;
             BackdropImage.Opacity = 1.0;
+        }
+
+        RetainBackground(game);
+    }
+
+    private void RetainBackground(GameEntry game)
+    {
+        _decodedBackgrounds.Remove(game);
+        _decodedBackgrounds.Add(game);
+        for (var index = 0; _decodedBackgrounds.Count > MaxDecodedBackgrounds && index < _decodedBackgrounds.Count - 1;)
+        {
+            var oldest = _decodedBackgrounds[index];
+            if (oldest.Background is not { } bitmap || ReferenceEquals(BackdropImage.Source, bitmap))
+            {
+                index++;
+                continue;
+            }
+
+            _decodedBackgrounds.RemoveAt(index);
+            oldest.Background = null;
+            bitmap.Dispose();
         }
     }
 
@@ -3273,6 +3345,7 @@ public partial class MainWindow : Window
             AppendConsoleLine(
                 Localization.Instance.Format("Launch.Command", launch.EbootPath),
                 DimLineBrush);
+            DispatcherTimer.RunOnce(GuiMemory.Release, TimeSpan.FromSeconds(3));
         }
         catch (Exception exception)
         {

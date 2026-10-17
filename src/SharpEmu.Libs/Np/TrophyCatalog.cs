@@ -17,7 +17,53 @@ public sealed record TrophyUnlockNotice(string TitleId, int TrophyId, int Grade,
 
 public static class TrophyCatalog
 {
-    public static IReadOnlyList<TrophyEntry> Load(string gameDirectory, string titleId, bool includeIcons = true)
+    public static string PackagePath(string gameDirectory) =>
+        Path.Combine(gameDirectory, "sce_sys", "trophy2", "trophy00.ucp");
+
+    public static IReadOnlyDictionary<int, DateTime> ReadUnlocks(string titleId)
+    {
+        var unlocks = new Dictionary<int, DateTime>();
+        try
+        {
+            var path = TrophyService.UnlockFilePath(titleId.ToUpperInvariant());
+            if (!File.Exists(path))
+            {
+                return unlocks;
+            }
+
+            using var document = System.Text.Json.JsonDocument.Parse(File.ReadAllBytes(path));
+            if (document.RootElement.TryGetProperty("unlocked", out var unlocked) &&
+                unlocked.ValueKind == System.Text.Json.JsonValueKind.Object)
+            {
+                foreach (var entry in unlocked.EnumerateObject())
+                {
+                    if (int.TryParse(entry.Name, out var id) && entry.Value.TryGetInt64(out var at))
+                    {
+                        unlocks[id] = new DateTime(at * 10, DateTimeKind.Utc);
+                    }
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException
+                                       or ArgumentException)
+        {
+        }
+
+        return unlocks;
+    }
+
+    public static long Stamp(string gameDirectory, string titleId)
+    {
+        var package = new FileInfo(Path.Combine(gameDirectory, "sce_sys", "trophy2", "trophy00.ucp"));
+        var unlocks = new FileInfo(TrophyService.UnlockFilePath(titleId.ToUpperInvariant()));
+        return HashCode.Combine(
+            package.Exists ? package.LastWriteTimeUtc.Ticks : 0,
+            package.Exists ? package.Length : 0,
+            unlocks.Exists ? unlocks.LastWriteTimeUtc.Ticks : 0,
+            unlocks.Exists ? unlocks.Length : 0);
+    }
+
+    public static IReadOnlyList<TrophyEntry> Load(string gameDirectory, string titleId, bool includeIcons = true, string? language = null)
     {
         try
         {
@@ -27,7 +73,8 @@ public static class TrophyCatalog
                 return [];
             }
 
-            var trophies = TrophyService.ReadTrophies(File.ReadAllBytes(packagePath), includeIcons);
+            using var stream = new FileStream(packagePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 4096, FileOptions.RandomAccess);
+            var trophies = TrophyService.ReadTrophies(stream, includeIcons, language);
             TrophyService.ApplyUnlocks(trophies, TrophyService.UnlockFilePath(titleId.ToUpperInvariant()));
             return trophies
                 .Select(t => new TrophyEntry(

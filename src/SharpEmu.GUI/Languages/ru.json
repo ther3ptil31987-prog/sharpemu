@@ -41,6 +41,7 @@
   "Library.Empty.AddFolder": "＋ Добавить папку с играми",
 
   "Library.Loading": "Загрузка библиотеки…",
+  "Library.ScanningFolder": "Сканирование папки…",
   "Library.Stat.Version": "Версия",
   "Library.Stat.Installed": "Установлено",
   "Library.Stat.TitleId": "ID игры",
@@ -258,6 +259,7 @@
 ,
   "Trophies.Title": "Трофеи",
   "Trophies.None": "В этой игре нет трофеев.",
+  "Trophies.Loading": "Загрузка трофеев…",
   "Trophies.Hidden": "Скрытый трофей",
   "Trophies.HiddenDescription": "Нажмите, чтобы раскрыть этот трофей.",
   "Trophies.Locked": "Ещё не получен",

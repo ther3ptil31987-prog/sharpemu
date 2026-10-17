@@ -2,11 +2,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using Avalonia;
-using Avalonia.Animation;
+using Avalonia.Animation.Easings;
 using Avalonia.Controls;
 using Avalonia.Input;
-using Avalonia.Media;
-using Avalonia.Media.Transformation;
+using Avalonia.Rendering.Composition;
 using Avalonia.Threading;
 
 namespace SharpEmu.GUI;
@@ -27,34 +26,7 @@ internal sealed class TrophyPage : UserControl
         var stage = new Grid();
         stage.Children.Add(_hub);
         stage.Children.Add(_game);
-        Content = new Border
-        {
-            CornerRadius = new CornerRadius(28),
-            ClipToBounds = true,
-            Background = new LinearGradientBrush
-            {
-                StartPoint = new RelativePoint(0, 0, RelativeUnit.Relative),
-                EndPoint = new RelativePoint(1, 1, RelativeUnit.Relative),
-                GradientStops =
-                {
-                    new GradientStop(Color.Parse("#16112B"), 0),
-                    new GradientStop(Color.Parse("#0C0A17"), 1),
-                },
-            },
-            BorderBrush = new SolidColorBrush(Color.FromArgb(28, 255, 255, 255)),
-            BorderThickness = new Thickness(1),
-            Child = stage,
-        };
-
-        foreach (var view in new Control[] { _hub, _game })
-        {
-            view.RenderTransform = TransformOperations.Parse("translateX(0px)");
-            view.Transitions =
-            [
-                new DoubleTransition { Property = OpacityProperty, Duration = SlideTime, Easing = new Avalonia.Animation.Easings.CubicEaseOut() },
-                new TransformOperationsTransition { Property = RenderTransformProperty, Duration = SlideTime, Easing = new Avalonia.Animation.Easings.CubicEaseOut() },
-            ];
-        }
+        Content = stage;
 
         _hub.GameChosen += (game, directory) => OpenGame(game, directory);
         _game.BackRequested += ShowCollection;
@@ -67,6 +39,30 @@ internal sealed class TrophyPage : UserControl
                 e.Handled = true;
             }
         };
+    }
+
+    private TrophyBackdrop? _backdrop;
+
+    public TrophyBackdrop? Backdrop
+    {
+        set
+        {
+            _backdrop = value;
+            _hub.Backdrop = value;
+            _game.Backdrop = value;
+        }
+    }
+
+    public void Unload()
+    {
+        ++_navigation;
+        _inGame = false;
+        _game.IsVisible = false;
+        _hub.IsVisible = true;
+        Place(_hub, 0, 1);
+        _hub.Unload();
+        _game.Unload();
+        _backdrop?.Clear();
     }
 
     public async void ShowCollection(IReadOnlyList<GameEntry> games)
@@ -91,11 +87,11 @@ internal sealed class TrophyPage : UserControl
             return;
         }
 
-        _hub.Opacity = 0;
+        ++_navigation;
         _game.Show(game, directory);
         _game.IsVisible = true;
-        _game.Opacity = 1;
-        _game.RenderTransform = TransformOperations.Parse("translateX(0px)");
+        Place(_game, 0, 1);
+        Place(_hub, 0, 0);
         _hub.IsVisible = false;
         _inGame = true;
         await _hub.ShowAsync(games);
@@ -122,17 +118,8 @@ internal sealed class TrophyPage : UserControl
         var token = ++_navigation;
         var distance = forward ? -48 : 48;
         arriving.IsVisible = true;
-        arriving.Opacity = 0;
-        arriving.RenderTransform = TransformOperations.Parse($"translateX({-distance}px)");
-        Dispatcher.UIThread.Post(
-            () =>
-            {
-                leaving.Opacity = 0;
-                leaving.RenderTransform = TransformOperations.Parse($"translateX({distance}px)");
-                arriving.Opacity = 1;
-                arriving.RenderTransform = TransformOperations.Parse("translateX(0px)");
-            },
-            DispatcherPriority.Background);
+        Move(leaving, 0, distance, 1, 0);
+        Move(arriving, -distance, 0, 0, 1);
         DispatcherTimer.RunOnce(
             () =>
             {
@@ -144,6 +131,34 @@ internal sealed class TrophyPage : UserControl
             SlideTime + TimeSpan.FromMilliseconds(40));
     }
 
+    private static void Place(Control control, double x, float opacity) =>
+        Move(control, x, x, opacity, opacity, TimeSpan.FromMilliseconds(1));
+
+    private static void Move(Control control, double fromX, double toX, float fromOpacity, float toOpacity) =>
+        Move(control, fromX, toX, fromOpacity, toOpacity, SlideTime);
+
+    private static void Move(Control control, double fromX, double toX, float fromOpacity, float toOpacity, TimeSpan duration)
+    {
+        if (ElementComposition.GetElementVisual(control) is not { } visual)
+        {
+            return;
+        }
+
+        var easing = new CubicEaseOut();
+        var translation = visual.Compositor.CreateVector3DKeyFrameAnimation();
+        translation.Target = "Translation";
+        translation.Duration = duration;
+        translation.InsertKeyFrame(0f, new Vector3D(fromX, 0, 0));
+        translation.InsertKeyFrame(1f, new Vector3D(toX, 0, 0), easing);
+        var opacity = visual.Compositor.CreateScalarKeyFrameAnimation();
+        opacity.Target = "Opacity";
+        opacity.Duration = duration;
+        opacity.InsertKeyFrame(0f, fromOpacity);
+        opacity.InsertKeyFrame(1f, toOpacity, easing);
+        visual.StartAnimation("Translation", translation);
+        visual.StartAnimation("Opacity", opacity);
+    }
+
     private void OnKeyDown(object? sender, KeyEventArgs e)
     {
         if (e.Key is Key.Escape or Key.Back && _inGame)
@@ -151,7 +166,7 @@ internal sealed class TrophyPage : UserControl
             ShowCollection();
             e.Handled = true;
         }
-        else if (!_inGame && _hub.HandleKey(e.Key))
+        else if (_inGame ? _game.HandleKey(e.Key) : _hub.HandleKey(e.Key))
         {
             e.Handled = true;
         }

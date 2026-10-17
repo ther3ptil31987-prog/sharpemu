@@ -40,6 +40,7 @@
   "Library.Empty.AddFolder": "＋ Añadir carpeta de juegos",
 
   "Library.Loading": "Cargando biblioteca…",
+  "Library.ScanningFolder": "Analizando la carpeta…",
   "Library.Stat.Version": "Versión",
   "Library.Stat.Installed": "Instalado",
   "Library.Stat.TitleId": "ID del título",
@@ -255,6 +256,7 @@
 ,
   "Trophies.Title": "Trofeos",
   "Trophies.None": "Este juego no tiene trofeos.",
+  "Trophies.Loading": "Cargando trofeos…",
   "Trophies.Hidden": "Trofeo oculto",
   "Trophies.HiddenDescription": "Haz clic para revelar este trofeo.",
   "Trophies.Locked": "Aún no conseguido",
