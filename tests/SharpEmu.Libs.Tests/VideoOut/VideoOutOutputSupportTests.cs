@@ -25,6 +25,42 @@ public sealed class VideoOutOutputSupportTests
         unchecked((ulong)(int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
 
     [Theory]
+    [InlineData(0UL)]
+    [InlineData(ulong.MaxValue)]
+    public void WqhdDetectionRejectsInvalidHandles(ulong handle)
+    {
+        var manager = new ModuleManager();
+        manager.RegisterExports(SharpEmu.Generated.SysAbiExportRegistry.CreateExports(Generation.Gen5));
+        var context = new CpuContext(new FakeCpuMemory(MemoryBase, 0x1000), Generation.Gen5);
+        context[CpuRegister.Rdi] = handle;
+        Assert.True(manager.TryDispatch("w7Ipp9Xl7hg", context, out _));
+        Assert.Equal(InvalidHandle, context[CpuRegister.Rax]);
+    }
+
+    [Fact]
+    public void WqhdDetectionAcceptsAnOpenPortAndRejectsItAfterClose()
+    {
+        var manager = new ModuleManager();
+        manager.RegisterExports(SharpEmu.Generated.SysAbiExportRegistry.CreateExports(Generation.Gen5));
+        var context = new CpuContext(new FakeCpuMemory(MemoryBase, 0x1000), Generation.Gen5);
+        Assert.True(manager.TryDispatch(OpenNid, context, out _));
+        var handle = context[CpuRegister.Rax];
+        try
+        {
+            context[CpuRegister.Rdi] = handle;
+            Assert.True(manager.TryDispatch("w7Ipp9Xl7hg", context, out _));
+            Assert.Equal(0UL, context[CpuRegister.Rax]);
+        }
+        finally
+        {
+            context[CpuRegister.Rdi] = handle;
+            Assert.True(manager.TryDispatch(CloseNid, context, out _));
+        }
+        Assert.True(manager.TryDispatch("w7Ipp9Xl7hg", context, out _));
+        Assert.Equal(InvalidHandle, context[CpuRegister.Rax]);
+    }
+
+    [Theory]
     [InlineData(true)]
     [InlineData(false)]
     public void AutoHdrFollowsThePlatformPolicyButOnAlwaysOptsIn(bool autoAllowed)

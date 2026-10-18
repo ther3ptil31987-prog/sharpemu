@@ -118,7 +118,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
   </PropertyGroup>
 
   <PropertyGroup>
-    <FfmpegRuntimeTag>3b502d4</FfmpegRuntimeTag>
+    <FfmpegRuntimeTag>e95fc79</FfmpegRuntimeTag>
     <FfmpegRuntimeDir>
       $(BaseIntermediateOutputPath)ffmpeg-runtime/$(FfmpegRuntimeTag)/$(RuntimeIdentifier)</FfmpegRuntimeDir>
     <FfmpegRuntimePackage Condition="'$(RuntimeIdentifier)' == 'win-x64'">ffmpeg-windows-x64.zip</FfmpegRuntimePackage>

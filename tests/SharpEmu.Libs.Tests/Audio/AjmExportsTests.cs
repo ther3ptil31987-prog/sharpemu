@@ -285,6 +285,168 @@ public sealed class AjmExportsTests : IDisposable
     }
 
     [Fact]
+    public void OpusInitializeRejectsMissingParametersInsteadOfReportingSuccess()
+    {
+        var contextId = Initialize();
+        Assert.Equal(0, RegisterCodec(contextId, 24));
+        Assert.Equal(0, CreateInstance(contextId, 24, 0x1402, InstanceAddress));
+        var id = ReadUInt32(InstanceAddress);
+        InitializeBatch(BatchBufferAddress, 48, BatchInfoAddress);
+        _ctx[CpuRegister.Rdi] = BatchInfoAddress;
+        _ctx[CpuRegister.Rsi] = id;
+        _ctx[CpuRegister.Rdx] = 0;
+        _ctx[CpuRegister.Rcx] = 12;
+        _ctx[CpuRegister.R8] = MemoryBase + 0x700;
+        Assert.Equal(0, AjmExports.AjmBatchJobInitialize(_ctx));
+        Assert.Equal(unchecked((uint)Atrac9DecodeState.ResultInvalidParameter), ReadUInt32(MemoryBase + 0x700));
+    }
+
+    [NativeOpusFact]
+    public void OpusDecodeExportProducesGuestPcmAndWritesStreamResult()
+    {
+        const ulong parameters = MemoryBase + 0x700;
+        const ulong result = MemoryBase + 0xA00;
+        const ulong input = MemoryBase + 0xB00;
+        const ulong output = MemoryBase + 0xC00;
+        var contextId = Initialize();
+        Assert.Equal(0, RegisterCodec(contextId, 24));
+        Assert.Equal(0, CreateInstance(contextId, 24, 0x1402, InstanceAddress));
+        var id = ReadUInt32(InstanceAddress);
+        InitializeBatch(BatchBufferAddress, 0x200, BatchInfoAddress);
+        Assert.True(_memory.TryWrite(parameters, AjmOpusDecoderTests.Parameters()));
+        var packet = AjmOpusDecoderTests.TonePacket();
+        Assert.True(_memory.TryWrite(input, packet));
+        _ctx[CpuRegister.Rdi] = BatchInfoAddress;
+        _ctx[CpuRegister.Rsi] = id;
+        _ctx[CpuRegister.Rdx] = parameters;
+        _ctx[CpuRegister.Rcx] = 12;
+        _ctx[CpuRegister.R8] = result;
+        Assert.Equal(0, AjmExports.AjmBatchJobInitialize(_ctx));
+        Assert.Equal(0u, ReadUInt32(result));
+
+        _ctx[CpuRegister.Rdx] = input;
+        _ctx[CpuRegister.Rcx] = (ulong)packet.Length;
+        _ctx[CpuRegister.R8] = output;
+        _ctx[CpuRegister.R9] = 0x400;
+        const ulong stack = MemoryBase + 0x980;
+        _ctx[CpuRegister.Rsp] = stack;
+        WriteUInt64(stack + 8, result);
+        Assert.Equal(0, AjmExports.AjmBatchJobDecodeSingle(_ctx));
+        Assert.Equal(0u, ReadUInt32(result));
+        Assert.Equal((uint)packet.Length, ReadUInt32(result + 8));
+        Assert.Equal(0x400u, ReadUInt32(result + 12));
+        Assert.Contains(ReadBytes(output, 0x400), value => value != 0);
+    }
+
+    [Fact]
+    public void GetResampleInfoReportsTheRequestedRatioAndOnlyWritesItsResult()
+    {
+        const ulong resultAddress = MemoryBase + 0x800;
+        var contextId = Initialize();
+        Assert.Equal(0, RegisterCodec(contextId, 24));
+        Assert.Equal(0, CreateInstance(contextId, 24, 0x1402, InstanceAddress));
+        var id = ReadUInt32(InstanceAddress);
+        InitializeBatch(BatchBufferAddress, 0x100, BatchInfoAddress);
+        _ctx[CpuRegister.Rdi] = BatchInfoAddress;
+        _ctx[CpuRegister.Rsi] = id;
+        _ctx[CpuRegister.Rdx] = 1;
+        _ctx[CpuRegister.Rcx] = 0;
+        _ctx.SetXmmRegister(0, BitConverter.SingleToUInt32Bits(0.5f), 0);
+        Assert.Equal(0, AjmExports.AjmBatchJobSetResampleParameters(_ctx));
+        Assert.True(_memory.TryWrite(resultAddress, Enumerable.Repeat((byte)0xCC, 49).ToArray()));
+        _ctx[CpuRegister.Rdx] = resultAddress;
+        Assert.Equal(0, AjmExports.AjmBatchJobGetResampleInfo(_ctx));
+        Assert.Equal(136ul, ReadUInt64(BatchInfoAddress + 8));
+        var result = ReadBytes(resultAddress, 49);
+        Assert.Equal(0.5f, BinaryPrimitives.ReadSingleLittleEndian(result.AsSpan(8)));
+        Assert.All(result[..8], value => Assert.Equal(0, value));
+        Assert.All(result[12..48], value => Assert.Equal(0, value));
+        Assert.Equal(0xCC, result[48]);
+    }
+
+    [Fact]
+    public void BatchJobSetResampleParameters_UsesMixedFloatAndIntegerAbi()
+    {
+        const ulong resultAddress = MemoryBase + 0x700;
+        var contextId = Initialize();
+        Assert.Equal(0, RegisterCodec(contextId, 1));
+        Assert.Equal(0, CreateInstance(contextId, 1, 0x401, InstanceAddress));
+        InitializeBatch(BatchBufferAddress, 72, BatchInfoAddress);
+        Assert.True(_memory.TryWrite(resultAddress, Enumerable.Repeat((byte)0xCC, 16).ToArray()));
+
+        _ctx[CpuRegister.Rdi] = BatchInfoAddress;
+        _ctx[CpuRegister.Rsi] = ReadUInt32(InstanceAddress);
+        _ctx[CpuRegister.Rdx] = 1; // RESET, not the float ratio.
+        _ctx[CpuRegister.Rcx] = resultAddress;
+        _ctx[CpuRegister.R8] = MemoryBase + 0x1000; // Not the result pointer.
+        _ctx.SetXmmRegister(0, BitConverter.SingleToUInt32Bits(1f), 0);
+
+        Assert.Equal(0, AjmExports.AjmBatchJobSetResampleParameters(_ctx));
+        Assert.Equal(0ul, _ctx[CpuRegister.Rax]);
+        Assert.Equal(72ul, ReadUInt64(BatchInfoAddress + 8));
+        Assert.Equal(BatchBufferAddress, ReadUInt64(BatchInfoAddress + 24));
+        Assert.All(ReadBytes(resultAddress, 8), value => Assert.Equal(0, value));
+        Assert.All(ReadBytes(resultAddress + 8, 8), value => Assert.Equal(0xCC, value));
+    }
+
+    [Theory]
+    [InlineData(0f, 0u, true)]
+    [InlineData(4f, 0u, true)]
+    [InlineData(-1f, 0u, false)]
+    [InlineData(4.1f, 0u, false)]
+    [InlineData(float.NaN, 0u, false)]
+    [InlineData(float.PositiveInfinity, 0u, false)]
+    [InlineData(float.NaN, 8u, true)]
+    public void BatchJobSetResampleParameters_ValidatesRatioUnlessIgnored(float ratio, uint flags, bool valid)
+    {
+        const ulong resultAddress = MemoryBase + 0x700;
+        var contextId = Initialize();
+        Assert.Equal(0, RegisterCodec(contextId, 1));
+        Assert.Equal(0, CreateInstance(contextId, 1, 0x401, InstanceAddress));
+        InitializeBatch(BatchBufferAddress, 72, BatchInfoAddress);
+        _ctx[CpuRegister.Rdi] = BatchInfoAddress;
+        _ctx[CpuRegister.Rsi] = ReadUInt32(InstanceAddress);
+        _ctx[CpuRegister.Rdx] = flags;
+        _ctx[CpuRegister.Rcx] = resultAddress;
+        _ctx.SetXmmRegister(0, BitConverter.SingleToUInt32Bits(ratio), 0);
+
+        Assert.Equal(0, AjmExports.AjmBatchJobSetResampleParameters(_ctx));
+        Assert.Equal(valid ? 0u : unchecked((uint)Atrac9DecodeState.ResultInvalidParameter), ReadUInt32(resultAddress));
+        Assert.Equal(0u, ReadUInt32(resultAddress + 4));
+    }
+
+    [Fact]
+    public void BatchJobSetResampleParameters_ReportsInvalidInstanceInSideband()
+    {
+        const ulong resultAddress = MemoryBase + 0x700;
+        InitializeBatch(BatchBufferAddress, 72, BatchInfoAddress);
+        _ctx[CpuRegister.Rdi] = BatchInfoAddress;
+        _ctx[CpuRegister.Rsi] = 0x60001;
+        _ctx[CpuRegister.Rcx] = resultAddress;
+        _ctx.SetXmmRegister(0, BitConverter.SingleToUInt32Bits(1f), 0);
+
+        Assert.Equal(0, AjmExports.AjmBatchJobSetResampleParameters(_ctx));
+        Assert.Equal(unchecked((uint)Atrac9DecodeState.ResultInvalidParameter), ReadUInt32(resultAddress));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void BatchJobSetResampleParameters_RejectsMissingOrFullBatchWithoutWritingResult(bool missing)
+    {
+        const ulong resultAddress = MemoryBase + 0x700;
+        InitializeBatch(BatchBufferAddress, 71, BatchInfoAddress);
+        WriteUInt64(resultAddress, 0xCCCCCCCCCCCCCCCC);
+        _ctx[CpuRegister.Rdi] = missing ? 0 : BatchInfoAddress;
+        _ctx[CpuRegister.Rcx] = resultAddress;
+
+        Assert.Equal(missing ? InvalidParameter : unchecked((int)0x80930012),
+            AjmExports.AjmBatchJobSetResampleParameters(_ctx));
+        Assert.Equal(0ul, ReadUInt64(BatchInfoAddress + 8));
+        Assert.Equal(0xCCCCCCCCCCCCCCCCul, ReadUInt64(resultAddress));
+    }
+
+    [Fact]
     public void BatchJobRunSplit_OmitsSidebandBlocksTheJobFlagsDidNotRequest()
     {
         const ulong inputDescriptors = MemoryBase + 0x600;
@@ -405,6 +567,10 @@ public sealed class AjmExportsTests : IDisposable
             Assert.Equal("sceAjmMemoryUnregister", memoryUnregister.Name);
             Assert.True(manager.TryGetExport("3cAg7xN995U", out var statistics));
             Assert.Equal("sceAjmBatchJobGetStatistics", statistics.Name);
+            Assert.True(manager.TryGetExport("81HsnXFbWS4", out var resample));
+            Assert.Equal("sceAjmBatchJobSetResampleParameters", resample.Name);
+            Assert.True(manager.TryGetExport("JkdNCocpu1M", out var resampleInfo));
+            Assert.Equal("sceAjmBatchJobGetResampleInfo", resampleInfo.Name);
         }
     }
 

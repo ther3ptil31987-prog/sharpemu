@@ -216,6 +216,8 @@ public sealed class VertexStageRegisters
 public sealed class PixelStageRegisters
 {
     public ulong Address;
+    public ulong UserDataAddress;
+    public ulong AuxiliaryTableAddress;
     public PixelResource1 Resource1;
     public PixelResource2 Resource2;
     public UserScalarRegisters UserScalars = new();

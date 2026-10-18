@@ -500,6 +500,14 @@ public static partial class VideoOutExports
     }
 
     [SysAbiExport(
+        Nid = "w7Ipp9Xl7hg",
+        ExportName = "sceVideoOutAllowOutputResolutionWqhdDetection",
+        Target = Generation.Gen5,
+        LibraryName = "libSceVideoOut")]
+    public static int VideoOutAllowOutputResolutionWqhdDetection(CpuContext ctx) =>
+        ctx.SetReturn(TryGetPort(unchecked((int)ctx[CpuRegister.Rdi]), out _) ? 0 : OrbisVideoOutErrorInvalidHandle);
+
+    [SysAbiExport(
         Nid = "utPrVdxio-8",
         ExportName = "sceVideoOutGetOutputStatus",
         Target = Generation.Gen4 | Generation.Gen5,
