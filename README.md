@@ -64,9 +64,9 @@ A selection of games tested with SharpEmu. This is not an exhaustive list of sup
 | :-----------------------------------------------------------: | :--------------------------------------------------------------------------------------------: |
 | ![DeS screenshot](./.github/images/demons-souls.jpg) | ![Astro Bot](./.github/images/astro-bot.jpg) |
 
-|                  ASTRO's PLAYROOM                    |                 Dead Cells                    |
+|                  ASTRO's PLAYROOM                    |                 Gran Turismo 7                    |
 | :------------------------------------------------------------------------: | :------------------------------------------------------------------: |
-| ![Astro's Playroom](./.github/images/astros-playroom.jpg) | ![Dead Cells](./.github/images/dead-cells.jpg) |
+| ![Astro's Playroom](./.github/images/astros-playroom.jpg) | ![GT7](./.github/images/gt7.jpg) |
 
 |                  God of War: Sons of Sparta                    |                 Tomb Raider V Remastered                    |
 | :------------------------------------------------------------------------: | :------------------------------------------------------------------: |

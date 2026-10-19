@@ -3,6 +3,7 @@
 
 using System.Globalization;
 using System.IO.Hashing;
+using System.Security.Cryptography;
 using System.Text;
 using SharpEmu.HLE;
 using SharpEmu.Libs.Gpu.Rendering;
@@ -108,7 +109,8 @@ internal sealed class ShaderCodeCapture
     public FusedCodeParts? Fused { get; init; }
     public required CodeRange[] Ranges { get; init; }
 
-    public (ulong Hash, uint CodeSize, ulong Address) Key => (Hash, CodeSize, Address);
+    public (ulong Hash, uint CodeSize, ulong Address, ulong ContinuationAddressOffset) Key =>
+        (Hash, CodeSize, Address, Fused is { } fused ? unchecked(fused.ContinuationAddress - Address) : 0);
 
     public CpuContext CreateContext()
     {
@@ -125,6 +127,7 @@ internal sealed class ShaderCodeCapture
 
 internal sealed class ComputePrewarmRecord
 {
+    public ulong ContinuationAddressOffset { get; init; }
     public required ulong Hash { get; init; }
     public required uint CodeSize { get; init; }
     public required ulong Address { get; init; }
@@ -135,7 +138,8 @@ internal sealed class ComputePrewarmRecord
     public Gen5ComputeSystemRegisters? SystemRegisters { get; init; }
     public required ResourceSpecialization Specialization { get; init; }
 
-    public (ulong Hash, uint CodeSize, ulong Address) CodeKey => (Hash, CodeSize, Address);
+    public (ulong Hash, uint CodeSize, ulong Address, ulong ContinuationAddressOffset) CodeKey =>
+        (Hash, CodeSize, Address, ContinuationAddressOffset);
 }
 
 internal sealed class ShaderPrewarmList : IDisposable
@@ -145,7 +149,7 @@ internal sealed class ShaderPrewarmList : IDisposable
     public const string ProgressFileName = "shader-prewarm.progress";
 
     private const uint Magic = 0x57504553;
-    private const uint FormatVersion = 1;
+    private const uint FormatVersion = 3;
     private const byte CodeKind = 1;
     private const byte ComputeKind = 2;
     private const int RecordHeaderBytes = sizeof(uint) + sizeof(ulong);
@@ -155,9 +159,9 @@ internal sealed class ShaderPrewarmList : IDisposable
     private readonly string _stampPath;
     private readonly string _progressPath;
     private readonly object _progressGate = new();
-    private readonly HashSet<(ulong Hash, uint CodeSize, ulong Address)> _codes = [];
+    private readonly HashSet<(ulong Hash, uint CodeSize, ulong Address, ulong ContinuationAddressOffset)> _codes = [];
     private readonly HashSet<ulong> _computes = [];
-    private readonly Dictionary<(ulong Hash, uint CodeSize, ulong Address), ShaderCodeCapture> _loadedCodes = new();
+    private readonly Dictionary<(ulong Hash, uint CodeSize, ulong Address, ulong ContinuationAddressOffset), ShaderCodeCapture> _loadedCodes = new();
     private readonly List<ComputePrewarmRecord> _loadedComputes = [];
     private bool _failed;
 
@@ -168,7 +172,15 @@ internal sealed class ShaderPrewarmList : IDisposable
         _progressPath = progressPath;
     }
 
+    private string _loadedCoverage = string.Empty;
+
     public int LoadedComputeCount => _loadedComputes.Count;
+    public string StampPath => _stampPath;
+
+    public string CoverageStamp(string stamp) => $"{stamp}|coverage-v1|{_loadedCoverage}";
+
+    public static string CacheStamp(string coverageStamp, ReadOnlySpan<byte> cache) =>
+        $"{coverageStamp}|cache-v1|{Convert.ToHexString(SHA256.HashData(cache))}";
 
     public static ShaderPrewarmList? Open(string directory)
     {
@@ -224,10 +236,15 @@ internal sealed class ShaderPrewarmList : IDisposable
     }
 
     public void WriteStamp(string stamp)
+        => WriteStamp(_stampPath, stamp);
+
+    public static void WriteStamp(string path, string stamp)
     {
         try
         {
-            File.WriteAllText(_stampPath, stamp);
+            var temporaryPath = path + $".{Environment.ProcessId}.tmp";
+            File.WriteAllText(temporaryPath, stamp);
+            File.Move(temporaryPath, path, overwrite: true);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
@@ -404,6 +421,7 @@ internal sealed class ShaderPrewarmList : IDisposable
             }
         }
 
+        _loadedCoverage = Convert.ToHexString(SHA256.HashData(content.AsSpan(0, checked((int)validEnd))));
         if (validEnd == 0)
         {
             _file.SetLength(0);
@@ -540,6 +558,7 @@ internal sealed class ShaderPrewarmList : IDisposable
         writer.Write(record.Hash);
         writer.Write(record.CodeSize);
         writer.Write(record.Address);
+        writer.Write(record.ContinuationAddressOffset);
         writer.Write(record.UserDataBase);
         writer.Write(record.UserDataCount);
         writer.Write(record.PushDataCursor);
@@ -557,6 +576,7 @@ internal sealed class ShaderPrewarmList : IDisposable
         writer.Write(info.WaveSize);
         writer.Write(info.LocalDataShareDwords);
         writer.Write(info.ScratchDwords);
+        writer.Write(info.IeeeMode);
         writer.Write(info.NeedsLocalDataShareBarriers);
         writer.Write(info.WorkgroupRegister);
 
@@ -613,6 +633,7 @@ internal sealed class ShaderPrewarmList : IDisposable
         var hash = reader.ReadUInt64();
         var codeSize = reader.ReadUInt32();
         var address = reader.ReadUInt64();
+        var continuationAddressOffset = reader.ReadUInt64();
         var userDataBase = reader.ReadUInt32();
         var userDataCount = reader.ReadUInt32();
         var pushDataCursor = reader.ReadUInt32();
@@ -630,6 +651,7 @@ internal sealed class ShaderPrewarmList : IDisposable
             WaveSize = reader.ReadUInt32(),
             LocalDataShareDwords = reader.ReadUInt32(),
             ScratchDwords = reader.ReadUInt32(),
+            IeeeMode = reader.ReadBoolean(),
             NeedsLocalDataShareBarriers = reader.ReadBoolean(),
             WorkgroupRegister = reader.ReadInt32(),
         };
@@ -671,6 +693,7 @@ internal sealed class ShaderPrewarmList : IDisposable
             CodeSize = codeSize,
             Address = address,
             UserDataBase = userDataBase,
+            ContinuationAddressOffset = continuationAddressOffset,
             UserDataCount = userDataCount,
             PushDataCursor = pushDataCursor,
             Info = info,

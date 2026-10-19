@@ -118,7 +118,45 @@ public interface ICommandStreamHost
 
     void CopyBuffer(ulong destination, ulong source, ulong size, bool destinationIsGds, bool sourceIsGds);
 
+    // Records a direct packet write for the image-clear trace; see docs/image-clear-tracing.md.
+    void TraceGuestWrite(string operation, ulong address, ulong size) { }
+
+    // Prints recorded writers of a range for the image-clear trace.
+    void TraceWritersOf(string subject, ulong address, ulong size) { }
+
     void ReadGds(Span<uint> destination, uint wordOffset, uint wordCount);
+
+    // Return completed samples for counter zero. False keeps the legacy fallback.
+    bool TryReadOcclusionCounter(int queueId, out ulong value)
+    {
+        value = 0;
+        return false;
+    }
+
+    bool ResetOcclusionCounter(int queueId) => false;
+
+    bool DumpOcclusionCounter(int queueId, ulong address, uint instanceMask, uint strideBytes) => false;
+
+    bool HasPendingPublications(int queueId) => false;
+
+    bool HasPendingMemoryPublication(ulong address, ulong size) => false;
+
+    // After a wait on another queue's unpublished label, this queue's writes must not land first.
+    // True when the write was held back; the host publishes it after that label.
+    bool TryDeferOrderedWrite(int queueId, ulong address, ReadOnlySpan<byte> source) => false;
+
+    // True when a read-modify-write must wait for the same reason; the caller suspends and retries.
+    bool MustHoldForCrossQueueOrder(int queueId) => false;
+
+    // Returns false when a pending publication hides the bytes from the command processor.
+    bool TryReadDeferredLabel(int queueId, ulong address, ulong size, out bool deferred, out ulong value)
+    {
+        deferred = false;
+        value = 0;
+        return true;
+    }
+
+    bool TryDeferEndOfPipe(int queueId, in EndOfPipeWrite write) => false;
 
     void RecordEndOfPipe(in EndOfPipeWrite write);
 
@@ -129,6 +167,8 @@ public interface ICommandStreamHost
 
     // Reserves and prepares a flip; the request id is never zero.
     ulong PrepareFlip(int handle, int index, int flipMode, long flipArgument);
+    ulong PrepareFlip(int queueId, int handle, int index, int flipMode, long flipArgument) =>
+        PrepareFlip(handle, index, flipMode, flipArgument);
 
     // True when no request still targets the buffer, so the stream may render into it.
     bool IsFlipDone(int handle, int index);

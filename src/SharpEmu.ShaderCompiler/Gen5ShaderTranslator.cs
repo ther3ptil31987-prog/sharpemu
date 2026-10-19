@@ -39,6 +39,18 @@ public static partial class Gen5ShaderTranslator
                 Volatile.Write(ref _programs, next);
             }
         }
+
+        public bool Remove(ulong entryAddress)
+        {
+            lock (_gate)
+            {
+                if (!_programs.ContainsKey(entryAddress)) return false;
+                var next = new Dictionary<ulong, FusedShaderParts>(_programs);
+                next.Remove(entryAddress);
+                Volatile.Write(ref _programs, next);
+                return true;
+            }
+        }
     }
 
     private sealed record FusedShaderParts(
@@ -82,6 +94,11 @@ public static partial class Gen5ShaderTranslator
             entryHeaderAddress,
             continuationAddress,
             continuationHeaderAddress));
+    }
+
+    public static bool UnregisterFusedProgram(CpuContext ctx, ulong entryAddress)
+    {
+        return GetFusedPrograms(ctx.Memory).Remove(entryAddress);
     }
 
     // The continuation registered for an entry address, when the guest joined two code objects.
@@ -160,6 +177,34 @@ public static partial class Gen5ShaderTranslator
             out program,
             out _,
             out error);
+    }
+
+    public static bool TryDecodeFunction(CpuContext context, ulong address,
+        out Gen5ShaderProgram program, out string error)
+    {
+        if ((address & 3) != 0 || address >= (1ul << 48))
+        {
+            program = new Gen5ShaderProgram(address, []);
+            error = "invalid function address";
+            return false;
+        }
+        return TryDecodeProgramSegment(context, address, null, true,
+            out program, out _, out error, coverForwardBranches: true);
+    }
+
+    public static bool TryDecodeFunction(CpuContext context, ulong address, uint maximumBytes,
+        out Gen5ShaderProgram program, out string error)
+    {
+        program = new Gen5ShaderProgram(address, []);
+        if (maximumBytes < sizeof(uint) || (address & 3) != 0 ||
+            address > ulong.MaxValue - maximumBytes)
+        {
+            error = "invalid function address or byte limit";
+            return false;
+        }
+
+        return TryDecodeProgramSegment(context, address, maximumBytes, true,
+            out program, out _, out error, coverForwardBranches: true);
     }
 
     private enum ProgramTermination
@@ -265,7 +310,7 @@ public static partial class Gen5ShaderTranslator
                 : instruction with { Pc = (uint)rebasedPc, AddressOffset = unchecked(continuationDistance + instruction.ProgramOffset) });
         }
 
-        program = new Gen5ShaderProgram(entryAddress, instructions);
+        program = new Gen5ShaderProgram(entryAddress, instructions) { IsFusedProgram = true };
         error = string.Empty;
         return true;
     }
@@ -296,7 +341,8 @@ public static partial class Gen5ShaderTranslator
         bool stopAtSetProgramCounter,
         out Gen5ShaderProgram program,
         out ProgramTermination termination,
-        out string error)
+        out string error,
+        bool coverForwardBranches = false)
     {
         program = new Gen5ShaderProgram(address, []);
         termination = ProgramTermination.None;
@@ -419,7 +465,8 @@ public static partial class Gen5ShaderTranslator
             }
 
             if (stopAtSetProgramCounter &&
-                string.Equals(name, "SSetpcB64", StringComparison.Ordinal))
+                string.Equals(name, "SSetpcB64", StringComparison.Ordinal) &&
+                (!coverForwardBranches || pc > furthestForwardBranchTarget))
             {
                 program = new Gen5ShaderProgram(address, instructions);
                 termination = ProgramTermination.SetProgramCounter;
@@ -885,6 +932,7 @@ public static partial class Gen5ShaderTranslator
             0x00 => "VNop",
             0x01 => "VMovB32",
             0x02 => "VReadfirstlaneB32",
+            0x03 => "VCvtI32F64",
             0x04 => "VCvtF64I32",
             0x05 => "VCvtF32I32",
             0x06 => "VCvtF32U32",
@@ -896,11 +944,17 @@ public static partial class Gen5ShaderTranslator
             0x0D => "VCvtFlrI32F32",
             0x0E => "VCvtOffF32I4",
             0x0F => "VCvtF32F64",
+            0x10 => "VCvtF64F32",
             0x11 => "VCvtF32Ubyte0",
             0x12 => "VCvtF32Ubyte1",
             0x13 => "VCvtF32Ubyte2",
             0x14 => "VCvtF32Ubyte3",
+            0x15 => "VCvtU32F64",
             0x16 => "VCvtF64U32",
+            0x17 => "VTruncF64",
+            0x18 => "VCeilF64",
+            0x19 => "VRndneF64",
+            0x1A => "VFloorF64",
             0x20 => "VFractF32",
             0x21 => "VTruncF32",
             0x22 => "VCeilF32",
@@ -922,6 +976,7 @@ public static partial class Gen5ShaderTranslator
             0x39 => "VFfbhU32",
             0x3A => "VFfblB32",
             0x3B => "VFfbhI32",
+            0x3E => "VFractF64",
             0x42 => "VMovreldB32",
             0x43 => "VMovrelsB32",
             0x44 => "VMovrelsdB32",
@@ -1077,6 +1132,38 @@ public static partial class Gen5ShaderTranslator
             0x1D => "VCmpxNeqF32",
             0x1E => "VCmpxNltF32",
             0x1F => "VCmpxTruF32",
+            0x20 => "VCmpFF64",
+            0x21 => "VCmpLtF64",
+            0x22 => "VCmpEqF64",
+            0x23 => "VCmpLeF64",
+            0x24 => "VCmpGtF64",
+            0x25 => "VCmpLgF64",
+            0x26 => "VCmpGeF64",
+            0x27 => "VCmpOF64",
+            0x28 => "VCmpUF64",
+            0x29 => "VCmpNgeF64",
+            0x2A => "VCmpNlgF64",
+            0x2B => "VCmpNgtF64",
+            0x2C => "VCmpNleF64",
+            0x2D => "VCmpNeqF64",
+            0x2E => "VCmpNltF64",
+            0x2F => "VCmpTruF64",
+            0x30 => "VCmpxFF64",
+            0x31 => "VCmpxLtF64",
+            0x32 => "VCmpxEqF64",
+            0x33 => "VCmpxLeF64",
+            0x34 => "VCmpxGtF64",
+            0x35 => "VCmpxLgF64",
+            0x36 => "VCmpxGeF64",
+            0x37 => "VCmpxOF64",
+            0x38 => "VCmpxUF64",
+            0x39 => "VCmpxNgeF64",
+            0x3A => "VCmpxNlgF64",
+            0x3B => "VCmpxNgtF64",
+            0x3C => "VCmpxNleF64",
+            0x3D => "VCmpxNeqF64",
+            0x3E => "VCmpxNltF64",
+            0x3F => "VCmpxTruF64",
             0x80 => "VCmpFI32",
             0x81 => "VCmpLtI32",
             0x82 => "VCmpEqI32",
@@ -1275,16 +1362,28 @@ public static partial class Gen5ShaderTranslator
             0x15E => "VCvtPkU8F32",
             0x148 => "VBfeU32",
             0x149 => "VBfeI32",
+            0x164 => "VAddF64",
             0x165 => "VMulF64",
+            0x166 => "VMinF64",
+            0x167 => "VMaxF64",
+            0x168 => "VLdexpF64",
             0x169 => "VMulLoU32",
             0x16A => "VMulHiU32",
             0x16B => "VMulLoI32",
             0x16C => "VMulHiI32",
             // VOP3-encoded VOP1 (opcode + 0x180) for the double-precision
             // conversions and transcendentals.
+            0x183 => "VCvtI32F64",
             0x184 => "VCvtF64I32",
             0x18F => "VCvtF32F64",
+            0x190 => "VCvtF64F32",
+            0x195 => "VCvtU32F64",
             0x196 => "VCvtF64U32",
+            0x197 => "VTruncF64",
+            0x198 => "VCeilF64",
+            0x199 => "VRndneF64",
+            0x19A => "VFloorF64",
+            0x1BE => "VFractF64",
             0x1AF => "VRcpF64",
             0x1B0 => "VRsqF64",
             0x1B4 => "VSqrtF64",
@@ -2534,7 +2633,7 @@ public static partial class Gen5ShaderTranslator
                         Gen5Operand.Vector(vectorData0),
                         Gen5Operand.Vector(vectorData1),
                     ],
-                    "DsSwizzleB32" => [Gen5Operand.Vector(vectorData0)],
+                    "DsSwizzleB32" => [Gen5Operand.Vector(vectorAddress)],
                     "DsBpermuteB32" => [
                         Gen5Operand.Vector(vectorAddress),
                         Gen5Operand.Vector(vectorData0),

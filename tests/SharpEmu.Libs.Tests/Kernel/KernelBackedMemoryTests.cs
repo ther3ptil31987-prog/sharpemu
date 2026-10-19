@@ -252,7 +252,7 @@ public sealed class KernelBackedMemoryTests
     }
 
     [Fact]
-    public void SparseImageReadRejectsUnreservedAndOutOfApertureRanges()
+    public void SparseImageReadZeroesUnresidentApertureRangesAndRejectsOutsideIt()
     {
         using var test = new BackedKernelMemory();
         var address = SharpEmu.Libs.Tests.Memory.HostViews.HostViewTestSupport.ProbeGuestAddress(test.Host, 0x20000);
@@ -261,13 +261,14 @@ public sealed class KernelBackedMemoryTests
         try
         {
             var result = Enumerable.Repeat((byte)0xAB, 0x20000).ToArray();
-            Assert.False(KernelMemoryCompatExports.TryReadPrtBacking(test.Memory, address, result));
-            Assert.All(result, value => Assert.Equal(0xAB, value));
-            Assert.False(KernelMemoryCompatExports.TryReadPrtBacking(test.Memory, ulong.MaxValue, result));
+            Assert.True(KernelMemoryCompatExports.TryReadPrtBacking(test.Memory, address, result));
+            Assert.All(result, value => Assert.Equal(0, value));
+            var untouched = Enumerable.Repeat((byte)0xAB, 0x4000).ToArray();
+            Assert.False(KernelMemoryCompatExports.TryReadPrtBacking(test.Memory, ulong.MaxValue, untouched));
             Assert.False(KernelMemoryCompatExports.TryReadPrtBacking(test.Memory, address, Span<byte>.Empty));
             SetPrtAperture(test, address, 0);
-            Assert.False(KernelMemoryCompatExports.TryReadPrtBacking(test.Memory, address, result.AsSpan(0, 0x4000)));
-            Assert.All(result, value => Assert.Equal(0xAB, value));
+            Assert.False(KernelMemoryCompatExports.TryReadPrtBacking(test.Memory, address, untouched));
+            Assert.All(untouched, value => Assert.Equal(0xAB, value));
         }
         finally
         {
@@ -393,9 +394,29 @@ public sealed class KernelBackedMemoryTests
             (ulong)method.Invoke(null, [ulong.MaxValue - 0x3FFF, alignment, alignment])!);
     }
 
+    [Fact]
+    public void UnhintedAddressSearchPreservesPlatformAllocationOrder()
+    {
+        using var test = new BackedKernelMemory();
+        var backing = new AddressSearchRecorder();
+        var method = typeof(KernelMemoryCompatExports).GetMethod("TrySelectBackingAddress",
+            System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!;
+        object[] arguments = [backing, 0UL, 0x4000UL, 0x4000UL, 0UL, 0UL, false];
+
+        Assert.True((bool)method.Invoke(null, arguments)!);
+        Assert.Equal(!OperatingSystem.IsWindows(), backing.PreferredOwnedReservation);
+        Assert.Single(backing.SearchStarts);
+    }
+
     private sealed class AddressSearchRecorder : IGuestBackedSpace
     {
+        public bool PreferredOwnedReservation { get; private set; }
         public List<ulong> SearchStarts { get; } = [];
+        public bool TryHoldAvailableRange(ulong searchStart, ulong size, ulong alignment, out ulong address)
+        {
+            PreferredOwnedReservation = true;
+            return TryHoldRangeAtOrAbove(searchStart, size, alignment, out address);
+        }
         public bool TryHoldRangeAtOrAbove(ulong searchStart, ulong size, ulong alignment, out ulong address)
         {
             SearchStarts.Add(searchStart);

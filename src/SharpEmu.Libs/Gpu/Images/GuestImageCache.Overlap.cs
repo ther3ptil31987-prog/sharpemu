@@ -500,6 +500,16 @@ public sealed partial class GuestImageCache
                 return new OverlapResolution(GrowImage(requested, cachedImageIdentifier));
             }
 
+            if (requested.IsVolume != cachedInfo.IsVolume)
+            {
+                if (safeToDelete)
+                {
+                    ReleaseImage(cachedImageIdentifier);
+                }
+
+                return new OverlapResolution(mergedImageIdentifier);
+            }
+
             throw SubmissionScheduler.Fatal(
                 $"An equal-address image overlap cannot be resolved: address=0x{requested.Data.Address:X16} requested={requested.Resources.Levels}x{requested.Resources.Layers} " +
                 $"cached={cachedInfo.Resources.Levels}x{cachedInfo.Resources.Layers} requestedSize=0x{requested.Data.Size:X16} cachedSize=0x{cachedInfo.Data.Size:X16} " +
@@ -545,26 +555,50 @@ public sealed partial class GuestImageCache
         var expanded = _slots[expandedImageIdentifier];
         var source = _slots[sourceImageIdentifier];
         expanded.Uses = source.Uses;
+        var firstLayer = !source.IsBufferModified && !source.IsCpuDirty && source.Backing.Exists &&
+            CanUploadArrayGrowthSuffix(source.Description, description)
+            ? source.Description.Resources.Layers : 0;
+        try
+        {
+            PopulateFromGuest(expandedImageIdentifier, ImageRequest.Refresh(description, UploadRole(source)),
+                firstLayer == 0 ? "expand" : "expand-partial", firstLayer);
+            var mip = source.Description.FindMatchingMipLevel(description);
+            var layer = source.Description.FindMatchingArraySlice(description, mip);
+            if (layer >= 0)
+            {
+                CopyIntoMip(expandedImageIdentifier, sourceImageIdentifier, (uint)mip, (uint)layer);
+            }
+            else
+            {
+                CopyWholeImage(expandedImageIdentifier, sourceImageIdentifier);
+            }
+        }
+        catch
+        {
+            ReleaseImage(expandedImageIdentifier);
+            throw;
+        }
+
         if (source.Binding.IsBound || source.Binding.IsTarget)
         {
             source.Binding.NeedsRebind = true;
         }
 
-        PopulateFromGuest(expandedImageIdentifier, ImageRequest.Refresh(description, UploadRole(source)), "expand");
-        var mip = source.Description.FindMatchingMipLevel(description);
-        var layer = source.Description.FindMatchingArraySlice(description, mip);
-        if (layer >= 0)
-        {
-            CopyIntoMip(expandedImageIdentifier, sourceImageIdentifier, (uint)mip, (uint)layer);
-        }
-        else
-        {
-            CopyWholeImage(expandedImageIdentifier, sourceImageIdentifier);
-        }
-
         ReleaseImage(sourceImageIdentifier);
         return expandedImageIdentifier;
     }
+
+    internal static bool CanUploadArrayGrowthSuffix(in ImageDescription source, in ImageDescription destination) =>
+        source.Type == GuestImageType.Color2D && destination.Type == GuestImageType.Color2D &&
+        !source.IsDepth && !destination.IsDepth && !source.IsBlock && !destination.IsBlock &&
+        !source.HasMetadata && !destination.HasMetadata && !source.HasStencil && !destination.HasStencil &&
+        !source.Bgra16 && !destination.Bgra16 &&
+        source.Metadata.Compression == DisplayCompression.Uncompressed && destination.Metadata.Compression == DisplayCompression.Uncompressed &&
+        source.Samples == 1 && destination.Samples == 1 && source.Resources.Levels == 1 && destination.Resources.Levels == 1 &&
+        source.Resources.Layers > 0 && source.Resources.Layers < destination.Resources.Layers &&
+        source.Data.Address == destination.Data.Address && source.GuestFormat == destination.GuestFormat &&
+        source.Pitch == destination.Pitch && SameExtent(source.Extent, destination.Extent) &&
+        source.FindMatchingArraySlice(destination, 0) == 0;
 
     // A compute shader writes the blocks of a compressed image through an
     // uncompressed view, but the driver could not give that image storage usage.
@@ -603,7 +637,8 @@ public sealed partial class GuestImageCache
         foreach (var imageIdentifier in FindImagesInRange(stencil.Address, stencil.Size, pageOverlap: false))
         {
             var owner = _slots.TryGet(imageIdentifier);
-            if (owner != null && owner.Description.Data.Address == stencil.Address)
+            if (owner != null && owner.Description.Data == stencil &&
+                owner.Description.Extent.Equals(depth.Description.Extent))
             {
                 association = imageIdentifier;
             }
@@ -619,6 +654,11 @@ public sealed partial class GuestImageCache
 
         var record = _slots[association];
         TouchImage(record);
+        // Release the former image watch on conversion. Keep an active stencil watch on reuse.
+        if (!record.DepthOwner.IsValid)
+        {
+            UnwatchImage(association);
+        }
         record.AssociateDepth(depthImageIdentifier);
         return association;
     }

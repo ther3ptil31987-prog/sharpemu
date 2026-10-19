@@ -393,7 +393,7 @@ public static class FontExports
 
         var code = (uint)ctx[CpuRegister.Rsi];
         if (!IsValidCode(code)) return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
-        return WriteGlyphMetrics(ctx, metricsAddress, GetGlyph(ctx[CpuRegister.Rdi], code), GetFontScale(ctx[CpuRegister.Rdi]).Height)
+        return WriteGlyphMetrics(ctx, metricsAddress, GetGlyphMetrics(ctx[CpuRegister.Rdi], code), GetFontScale(ctx[CpuRegister.Rdi]).Height)
             ? SetSuccess(ctx)
             : SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
     }
@@ -618,9 +618,7 @@ public static class FontExports
         var height = BitConverter.UInt32BitsToSingle((uint)heightBits);
         if (float.IsFinite(height) && height > 1)
         {
-            FontScales[ctx[CpuRegister.Rdi]] = (
-                float.IsFinite(width) && width > 1 ? Math.Clamp(width, 8, 128) : Math.Clamp(height, 8, 128),
-                Math.Clamp(height, 8, 128));
+            FontScales[ctx[CpuRegister.Rdi]] = (float.IsFinite(width) && width > 1 ? width : height, height);
         }
         return SetSuccess(ctx);
     }
@@ -634,6 +632,12 @@ public static class FontExports
     {
         var scale = GetFontScale(font);
         return (FontFaces.TryGetValue(font, out var face) ? face : DefaultFont.Value).GetGlyph(code, scale.Width, scale.Height);
+    }
+
+    private static FontGlyph GetGlyphMetrics(ulong font, uint code)
+    {
+        var scale = GetFontScale(font);
+        return (FontFaces.TryGetValue(font, out var face) ? face : DefaultFont.Value).GetGlyphMetrics(code, scale.Width, scale.Height);
     }
 
     private static bool WriteGlyphMetrics(CpuContext ctx, ulong address, FontGlyph glyph, float height)

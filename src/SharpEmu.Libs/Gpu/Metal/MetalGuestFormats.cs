@@ -31,11 +31,13 @@ internal enum MtlPixelFormat : uint
     R32Sint = 54,
     R32Float = 55,
     Rg16Unorm = 60,
+    Rg16Snorm = 62,
     Rg16Uint = 63,
     Rg16Sint = 64,
     Rg16Float = 65,
     Rgba8Unorm = 70,
     Rgba8UnormSrgb = 71,
+    Rgba8Snorm = 72,
     Rgba8Uint = 73,
     Rgba8Sint = 74,
     Bgra8Unorm = 80,
@@ -48,6 +50,7 @@ internal enum MtlPixelFormat : uint
     Rg32Sint = 104,
     Rg32Float = 105,
     Rgba16Unorm = 110,
+    Rgba16Snorm = 112,
     Rgba16Uint = 113,
     Rgba16Sint = 114,
     Rgba16Float = 115,
@@ -98,10 +101,10 @@ internal readonly record struct MetalRenderTargetFormat(
     public static uint GetBytesPerPixel(MtlPixelFormat format) =>
         format switch
         {
-            MtlPixelFormat.R8Unorm or MtlPixelFormat.R8Uint => 1,
-            MtlPixelFormat.Rg8Unorm => 2,
+            MtlPixelFormat.R8Unorm or MtlPixelFormat.R8Snorm or MtlPixelFormat.R8Uint => 1,
+            MtlPixelFormat.Rg8Unorm or MtlPixelFormat.Rg8Snorm => 2,
             MtlPixelFormat.Rg32Float => 8,
-            MtlPixelFormat.Rgba16Unorm or MtlPixelFormat.Rgba16Uint or
+            MtlPixelFormat.Rgba16Unorm or MtlPixelFormat.Rgba16Snorm or MtlPixelFormat.Rgba16Uint or
                 MtlPixelFormat.Rgba16Sint or MtlPixelFormat.Rgba16Float => 8,
             MtlPixelFormat.Rgba32Float => 16,
             _ => 4,
@@ -253,6 +256,7 @@ internal static class MetalGuestFormats
             (6, 7, _) or (7, 7, _) => MtlPixelFormat.Rg11B10Float,
             (9, _, 1) => MtlPixelFormat.Bgr10A2Unorm,
             (9, _, _) => MtlPixelFormat.Rgb10A2Unorm,
+            (10, 1, _) => MtlPixelFormat.Rgba8Snorm,
             (10, 4, _) => MtlPixelFormat.Rgba8Uint,
             (10, 5, _) => MtlPixelFormat.Rgba8Sint,
             (10, 6 or 9, 1) => MtlPixelFormat.Bgra8UnormSrgb,
@@ -262,16 +266,21 @@ internal static class MetalGuestFormats
             (11, 4, _) => MtlPixelFormat.Rg32Uint,
             (11, 5, _) => MtlPixelFormat.Rg32Sint,
             (11, 7, _) => MtlPixelFormat.Rg32Float,
+            (12, 1, _) => MtlPixelFormat.Rgba16Snorm,
             (12, 4, _) => MtlPixelFormat.Rgba16Uint,
             (12, 5, _) => MtlPixelFormat.Rgba16Sint,
             (12, 7, _) => MtlPixelFormat.Rgba16Float,
+            (14, 4, _) => MtlPixelFormat.Rgba32Uint,
             (13, 7, _) or (14, 7, _) => MtlPixelFormat.Rgba32Float,
             (20, 0, _) => MtlPixelFormat.R32Uint,
             (29, 0, _) or (4, 0, _) => MtlPixelFormat.R32Float,
             (1, 0, _) or (36, 0, _) => MtlPixelFormat.R8Unorm,
+            (1, 1, _) => MtlPixelFormat.R8Snorm,
             (49, 0, _) => MtlPixelFormat.R8Uint,
             (3, 0, _) => MtlPixelFormat.Rg8Unorm,
+            (3, 1, _) => MtlPixelFormat.Rg8Snorm,
             (5, 0, _) => MtlPixelFormat.Rg16Unorm,
+            (5, 1, _) => MtlPixelFormat.Rg16Snorm,
             (7, 0, _) => MtlPixelFormat.Rg11B10Float,
             (12, 0, _) => MtlPixelFormat.Rgba16Unorm,
             (13, 0, _) or (14, 0, _) => MtlPixelFormat.Rgba32Float,
@@ -296,7 +305,7 @@ internal static class MetalGuestFormats
         {
             MtlPixelFormat.R8Uint or MtlPixelFormat.R16Uint or MtlPixelFormat.R32Uint or
                 MtlPixelFormat.Rg16Uint or MtlPixelFormat.Rg32Uint or MtlPixelFormat.Rgba8Uint or
-                MtlPixelFormat.Rgba16Uint => Gen5PixelOutputKind.Uint,
+                MtlPixelFormat.Rgba16Uint or MtlPixelFormat.Rgba32Uint => Gen5PixelOutputKind.Uint,
             MtlPixelFormat.R16Sint or MtlPixelFormat.R32Sint or MtlPixelFormat.Rg16Sint or
                 MtlPixelFormat.Rg32Sint or MtlPixelFormat.Rgba8Sint or MtlPixelFormat.Rgba16Sint =>
                 Gen5PixelOutputKind.Sint,

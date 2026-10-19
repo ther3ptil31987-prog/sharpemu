@@ -231,20 +231,7 @@ internal static unsafe partial class VulkanVideoPresenter
                 int ran;
                 using (RenderPhaseProfile.Measure(RenderPhaseProfile.Phase.CommandStream))
                 {
-                    var aliasAccess = _guestBacking?.TryEnterBackingAliasAccess() == true;
-                    _backingAliasAccess = aliasAccess;
-                    try
-                    {
-                        ran = thread.RunBatch(renderWorkDeadline, CommandItemBatch, _betweenCommandItems!);
-                    }
-                    finally
-                    {
-                        _backingAliasAccess = false;
-                        if (aliasAccess)
-                        {
-                            _guestBacking!.ExitBackingAliasAccess();
-                        }
-                    }
+                    ran = thread.RunBatch(renderWorkDeadline, CommandItemBatch, _betweenCommandItems!);
                 }
 
                 if (ran == 0 || System.Diagnostics.Stopwatch.GetTimestamp() >= renderWorkDeadline)
@@ -304,13 +291,18 @@ internal static unsafe partial class VulkanVideoPresenter
         {
             public ICpuMemory Inner => inner;
 
-            public bool TryRead(ulong virtualAddress, Span<byte> destination) =>
-                presenter.OnCommandThread
+            public bool TryRead(ulong virtualAddress, Span<byte> destination)
+            {
+                if (presenter.HasPendingMemoryPublication(virtualAddress, (ulong)destination.Length))
+                    presenter.CompleteOverlappingPublications(virtualAddress, (ulong)destination.Length);
+                return presenter.OnCommandThread
                     ? presenter._commandThread!.ReadOverlay(virtualAddress, destination)
                     : inner.TryRead(virtualAddress, destination);
+            }
 
             public bool TryWrite(ulong virtualAddress, ReadOnlySpan<byte> source)
             {
+                presenter.CompleteOverlappingPublications(virtualAddress, (ulong)source.Length);
                 if (presenter.OnCommandThread)
                 {
                     presenter._commandThread!.PostWrite(virtualAddress, source);
@@ -333,6 +325,7 @@ internal static unsafe partial class VulkanVideoPresenter
                 }
 
                 drain();
+                presenter.CompleteOverlappingPublications(virtualAddress, (ulong)expected.Length);
                 return inner.TryCompare(virtualAddress, expected, out equal);
             }
 
@@ -344,6 +337,8 @@ internal static unsafe partial class VulkanVideoPresenter
                 }
 
                 drain();
+                presenter.CompleteOverlappingPublications(destinationAddress, length);
+                presenter.CompleteOverlappingPublications(sourceAddress, length);
                 return inner.TryCopy(destinationAddress, sourceAddress, length);
             }
 
@@ -369,7 +364,8 @@ internal static unsafe partial class VulkanVideoPresenter
         private bool ReadOnCommandThread(ulong address, Span<byte> destination)
         {
             _commandThread!.WaitForPendingRange(address, (ulong)destination.Length);
-            return _bufferCache.MayHaveGpuDirtyPages(address, (ulong)destination.Length)
+            return HasPendingMemoryPublication(address, (ulong)destination.Length) ||
+                _bufferCache.MayHaveGpuDirtyPages(address, (ulong)destination.Length)
                 ? ReadOnRenderThread(address, destination, operand: false)
                 : _commandThread!.ReadOverlay(address, destination);
         }
@@ -397,6 +393,8 @@ internal static unsafe partial class VulkanVideoPresenter
 
             using (RenderPhaseProfile.MeasureDetail(RenderPhaseProfile.Phase.CommandMemorySync))
             {
+                if (HasPendingMemoryPublication(address, (ulong)destination.Length))
+                    CompleteOverlappingPublications(address, (ulong)destination.Length);
                 // GPU-written command memory is downloaded first: deferred draws are recorded before it.
                 if (_translation is { HasPendingDraws: true } && _bufferCache.MayHaveGpuDirtyPages(address, (ulong)destination.Length))
                 {
@@ -448,6 +446,10 @@ internal static unsafe partial class VulkanVideoPresenter
 
         private void BeginSubmissionContext(int queueId, ulong submissionId)
         {
+            if (_occlusionQueueId != queueId)
+                EndRendering();
+            _occlusionQueueId = queueId;
+            _imageCache.SetMetadataTraceSubmission(queueId, submissionId);
             using var contextScope = RenderPhaseProfile.MeasureDetail(RenderPhaseProfile.Phase.QueueContext);
             _activeGuestQueue = new VulkanGuestQueueIdentity(_commandQueueNames[queueId], submissionId);
             BindSubmissionContext(_activeGuestQueue);
@@ -603,6 +605,15 @@ internal static unsafe partial class VulkanVideoPresenter
             _bufferCache.CopyBuffer(destination, source, size, destinationIsGds, sourceIsGds);
         }
 
+        public void TraceGuestWrite(string operation, ulong address, ulong size) =>
+            _imageCache.TraceGuestWrite(operation, address, size);
+
+        public void TraceWritersOf(string subject, ulong address, ulong size) =>
+            _imageCache.TraceWritersOf(subject, address, size);
+
+        public void TraceDrawTarget(string disposition, ulong address, ulong pixelShaderAddress, ulong vertexShaderAddress) =>
+            _imageCache.TraceGuestWrite($"draw-target-{disposition}", address, 1, pixelShaderAddress, vertexShaderAddress);
+
         public void ReadGds(Span<uint> destination, uint wordOffset, uint wordCount)
         {
             if (OnCommandThread)
@@ -708,16 +719,35 @@ internal static unsafe partial class VulkanVideoPresenter
             }
         }
 
-        public ulong PrepareFlip(int handle, int index, int flipMode, long flipArgument)
+        public ulong PrepareFlip(int handle, int index, int flipMode, long flipArgument) =>
+            PrepareFlip(0, handle, index, flipMode, flipArgument);
+
+        public ulong PrepareFlip(int queueId, int handle, int index, int flipMode, long flipArgument)
         {
             if (OnCommandThread)
             {
-                return _commandThread!.Run(() => PrepareFlip(handle, index, flipMode, flipArgument));
+                return _commandThread!.Run(() => PrepareFlip(queueId, handle, index, flipMode, flipArgument));
             }
 
             DrainDraws();
             _ = BeginBatchedGuestCommands();
-            return _endOfPipe.PrepareVideoOutFlip(_scheduler.Current, handle, index, flipMode, flipArgument);
+            var publication = _guestPublications.LastRecorded(queueId) is null
+                ? null : _guestPublications.AddAfterPending(queueId, 0, 0);
+            if (publication is not null) _guestPublications.Register(publication, _scheduler.CurrentTick);
+            _capturePublication = publication;
+            try
+            {
+                var request = _endOfPipe.PrepareVideoOutFlip(_scheduler.Current, handle, index, flipMode, flipArgument);
+                if (publication is not null && !(_flipPublications ??= new()).TryAdd(request, publication))
+                    throw SubmissionScheduler.Fatal("The flip publication is already registered.");
+                return request;
+            }
+            catch (Exception exception)
+            {
+                FailGuestPublications(exception);
+                throw;
+            }
+            finally { _capturePublication = null; }
         }
 
         public bool IsFlipDone(int handle, int index)
@@ -885,7 +915,6 @@ internal static unsafe partial class VulkanVideoPresenter
 
         public void CompleteFlip(ulong requestId)
         {
-            DrainDraws();
             VideoOutExports.CompleteFlip(requestId);
         }
 
@@ -893,9 +922,13 @@ internal static unsafe partial class VulkanVideoPresenter
         internal void CaptureFlip(int handle, int index, ulong requestId, int flipMode, long flipArg)
         {
             DrainDraws();
+            var publication = _capturePublication ?? _guestPublications.LastRecorded(0);
             // A no-buffer flip has no image to capture; its completion still retires in order.
-            if (VideoOutExports.ReleaseNoBufferFlip(index, requestId))
+            if (index == -1)
             {
+                if (_capturePublication is not null) return;
+                if (publication is null) VideoOutExports.ReleaseNoBufferFlip(index, requestId);
+                else _scheduler.QueueMemoryPublication(() => VideoOutExports.ReleaseNoBufferFlip(index, requestId), publication.Tick);
                 return;
             }
             if (!VideoOutExports.TryGetDisplayBufferInfo(handle, index, out var displayBuffer))
@@ -994,7 +1027,8 @@ internal static unsafe partial class VulkanVideoPresenter
                         GuestImageVersion: version,
                         IsHdr: VideoOutExports.IsHdrPixelFormat(displayBuffer.PixelFormat),
                         RequiredTick: captureTick,
-                        FlipRequestId: requestId);
+                        FlipRequestId: requestId,
+                        Publication: publication);
                     _latestPresentation = presentation;
                     _pendingGuestImagePresentations.Enqueue(presentation);
                     while (_pendingGuestImagePresentations.Count > MaxPendingGuestFlipVersions)
@@ -1009,6 +1043,8 @@ internal static unsafe partial class VulkanVideoPresenter
                     $"queue={_activeGuestQueue.Name} submission={_activeGuestQueue.SubmissionId} " +
                     $"request={requestId} addr=0x{displayBuffer.Address:X16} " +
                     $"size={extent.Width}x{extent.Height}");
+                IndexedDrawTrace.OnFlip(version);
+                VisibilityResultTrace.OnFlip(version);
                 RenderDocCapture.OnGuestFlipBoundary(version);
                 VideoOutExports.TraceGpuFlip(_guestMemory, handle, index, flipMode, flipArg, displayBuffer.Address, VideoOutExports.GetFlipEventCount(requestId));
             }
@@ -1057,6 +1093,7 @@ internal static unsafe partial class VulkanVideoPresenter
 
         // Keep GPU completion separate from refresh eligibility.
         private bool IsPresentationReadyLocked(in Presentation presentation) =>
+            (presentation.Publication is null || presentation.Publication.Completed) &&
             (presentation.RequiredTick == 0 || (_scheduler is not null && _scheduler.Timeline.CompletedTick >= presentation.RequiredTick)) &&
             VideoOutExports.CanPresentFlip(presentation.FlipRequestId, System.Diagnostics.Stopwatch.GetTimestamp());
 

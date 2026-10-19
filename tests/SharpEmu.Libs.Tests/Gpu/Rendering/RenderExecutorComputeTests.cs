@@ -25,6 +25,50 @@ public sealed class RenderExecutorComputeTests : IDisposable
 
     public void Dispose() => _fatal.Dispose();
 
+    [Fact]
+    public void CompletedPipeline_RetriesPublicationBeforeDispatch()
+    {
+        _pipelines.PendingComputeCompletion = Task.CompletedTask;
+        _executor.Dispatch(5, Banks(), 4, 2, 1, 0x41);
+        Assert.Equal(2, _pipelines.ComputePipelineAttempts);
+        AssertDispatched(4, 2, 1);
+    }
+
+    [Fact]
+    public void FailedPipeline_PropagatesAndEndsPreparationWithoutDispatch()
+    {
+        var failure = new InvalidOperationException("Compile failed.");
+        _pipelines.PendingComputeCompletion = Task.FromException(failure);
+        Assert.Same(failure, Assert.Throws<InvalidOperationException>(() =>
+            _executor.Dispatch(5, Banks(), 4, 2, 1, 0x41)));
+        AssertNotDispatched();
+        Assert.Contains("preparation_end", _host.Calls);
+        Assert.Equal(1, _pipelines.ComputePipelineAttempts);
+    }
+
+    [Fact]
+    public async Task PendingPipeline_WaitsWithoutPolling()
+    {
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var requested = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _pipelines.PendingComputeCompletion = completion.Task;
+        _pipelines.CompletionRequested = () => requested.TrySetResult();
+        var dispatch = Task.Run(() => _executor.Dispatch(5, Banks(), 4, 2, 1, 0x41));
+        try
+        {
+            await requested.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.False(dispatch.IsCompleted);
+            Assert.Equal(1, _pipelines.ComputePipelineAttempts);
+        }
+        finally
+        {
+            completion.TrySetResult();
+            await dispatch.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        Assert.Equal(2, _pipelines.ComputePipelineAttempts);
+        AssertDispatched(4, 2, 1);
+    }
+
     private static BufferResourceInfo ClearResource(bool read = false, bool formatted = true, bool written = true, uint maxByteExtent = 16, uint packedStride = 16) =>
         new(read, written, false, formatted, false, maxByteExtent, packedStride);
 
@@ -98,14 +142,36 @@ public sealed class RenderExecutorComputeTests : IDisposable
         AssertDispatched(13, 3, 1);
     }
 
-    [Fact]
-    public void ZeroSizedDispatch_IsSkippedWithoutEndingRenderingOrResettingBindings()
+    [Theory]
+    [InlineData(0u, 1u, 1u, 0x41u, 0ul)]
+    [InlineData(4u, 0u, 1u, 0x41u, 0ul)]
+    [InlineData(4u, 1u, 0u, 0x41u, 0ul)]
+    [InlineData(0u, 1u, 1u, 0x61u, 0ul)]
+    [InlineData(4u, 0u, 1u, 0x61u, 0ul)]
+    [InlineData(4u, 1u, 0u, 0x61u, 0ul)]
+    [InlineData(0u, 1u, 1u, 0x61u, 0x1000ul)]
+    public void ZeroSizedDispatch_IsSkippedBeforeProgramLookupAndClearOperations(
+        uint groupsX, uint groupsY, uint groupsZ, uint initiator, ulong indirectArgumentsAddress)
     {
-        _executor.Dispatch(1, Banks(), 4, 0, 1, 0x41);
+        ConfigureClearKernel(0);
+        _host.ClearableMetadata.Add(MetadataAddress);
+        _executor.Dispatch(1, Banks(), groupsX, groupsY, groupsZ, initiator, indirectArgumentsAddress);
 
         AssertNotDispatched();
+        Assert.Empty(_pipelines.Calls);
+        Assert.Equal(2, _host.Calls.Count);
+        Assert.Equal("pending", _host.Calls[0]);
+        Assert.StartsWith("debug DispatchDirect", _host.Calls[1]);
         Assert.DoesNotContain("end_rendering", _host.Calls);
         Assert.DoesNotContain("reset_bindings", _host.Calls);
+    }
+
+    [Fact]
+    public void IndirectGroupDispatch_DoesNotTreatPlaceholderCountsAsAnEmptyDispatch()
+    {
+        _executor.Dispatch(1, Banks(), 0, 0, 0, 0x41, 0x1000);
+
+        Assert.Contains("create_compute_pipeline", _pipelines.Calls);
     }
 
     [Fact]

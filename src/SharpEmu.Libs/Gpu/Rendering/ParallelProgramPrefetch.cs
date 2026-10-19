@@ -3,6 +3,7 @@
 
 using SharpEmu.Libs.Gpu.GpuCommands.Registers;
 using SharpEmu.Libs.Gpu.Scheduling;
+using SharpEmu.Libs.VideoOut;
 
 namespace SharpEmu.Libs.Gpu.Rendering;
 
@@ -12,9 +13,10 @@ namespace SharpEmu.Libs.Gpu.Rendering;
 // GPU-ownership state; otherwise it resolves the draw itself.
 public sealed class ParallelProgramPrefetch : IProgramPrefetch, IDisposable
 {
-    public sealed class Job(RegisterBanks banks, long gate)
+    public sealed class Job(RegisterBanks banks, long gate, bool indexed = false)
     {
         internal readonly RegisterBanks Banks = banks;
+        internal readonly bool Indexed = indexed;
         // The count of stream items other than draws that must have run before the job resolves.
         internal readonly long Gate = gate;
         internal GraphicsProgramInputs Inputs;
@@ -55,9 +57,9 @@ public sealed class ParallelProgramPrefetch : IProgramPrefetch, IDisposable
 
     // A gate above zero holds the job until AdvanceGate reaches it: with the command stream on its own
     // thread, draws are submitted ahead of the work before them, which may change what they read.
-    public Job Submit(RegisterBanks banks, long gate = 0)
+    public Job Submit(RegisterBanks banks, long gate = 0, bool indexed = false)
     {
-        var job = new Job(banks, gate);
+        var job = new Job(banks, gate, indexed);
         lock (_lock)
         {
             _queue.Enqueue(job);
@@ -78,6 +80,7 @@ public sealed class ParallelProgramPrefetch : IProgramPrefetch, IDisposable
             return;
         }
 
+        using var profile = RenderPhaseProfile.MeasureDetail(RenderPhaseProfile.Phase.ProgramPrefetchDrainWait);
         lock (_lock)
         {
             while (_outstanding != 0)
@@ -111,6 +114,7 @@ public sealed class ParallelProgramPrefetch : IProgramPrefetch, IDisposable
             return;
         }
 
+        using var profile = RenderPhaseProfile.MeasureDetail(RenderPhaseProfile.Phase.ProgramPrefetchOrderWait);
         lock (_lock)
         {
             while (_finished < count)
@@ -123,6 +127,7 @@ public sealed class ParallelProgramPrefetch : IProgramPrefetch, IDisposable
     // Holds the worker between jobs, for host work that changes what a resolution reads.
     public void Pause()
     {
+        using var profile = RenderPhaseProfile.MeasureDetail(RenderPhaseProfile.Phase.ProgramPrefetchPauseWait);
         lock (_lock)
         {
             _paused = true;
@@ -153,6 +158,7 @@ public sealed class ParallelProgramPrefetch : IProgramPrefetch, IDisposable
 
         Current = null;
         WaitFor(job);
+        using var profile = RenderPhaseProfile.MeasureDetail(RenderPhaseProfile.Phase.ProgramPrefetchValidation);
         if (job.State != 1 || !job.Inputs.Equals(inputs) || !_concurrent.IsStillCurrent(job.Assumptions!))
         {
             return false;
@@ -164,6 +170,12 @@ public sealed class ParallelProgramPrefetch : IProgramPrefetch, IDisposable
 
     private void WaitFor(Job job)
     {
+        if (job.State != 0)
+        {
+            return;
+        }
+
+        using var profile = RenderPhaseProfile.MeasureDetail(RenderPhaseProfile.Phase.ProgramPrefetchWait);
         var spinner = new SpinWait();
         for (var spin = 0; spin < 64 && job.State == 0; spin++)
         {
@@ -258,7 +270,7 @@ public sealed class ParallelProgramPrefetch : IProgramPrefetch, IDisposable
         _concurrent.BeginConcurrentResolve();
         try
         {
-            job.Inputs = RenderExecutor.ProgramInputsOf(job.Banks, _host.FormatSupport, _host.Fatal);
+            job.Inputs = RenderExecutor.ProgramInputsOf(job.Banks, _host.FormatSupport, _host.Fatal, job.Indexed);
             job.Programs = _executor.ResolveGraphicsPrograms(job.Banks, in job.Inputs);
             job.Assumptions = _concurrent.EndConcurrentResolve();
             job.State = 1;

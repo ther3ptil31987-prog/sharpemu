@@ -39,7 +39,7 @@ public sealed class ResourceMaterializerTests
         var previousSpecialization = specialization;
         var success = ResourceMaterializer.Materialize(plan, Inputs(userData, readCleanMemory: memory.Read),
             ref snapshot, ref specialization, out var failure);
-        Assert.Equal(distinctCount <= ShaderResourceInfo.MaxImages, success);
+        Assert.Equal(distinctCount <= ShaderResourceInfo.MaxIndirectImageCandidates, success);
         if (success)
         {
             Assert.Equal(ResourceMaterializationFailure.None, failure);
@@ -244,6 +244,15 @@ public sealed class ResourceMaterializerTests
         Assert.Equal(3, snapshot.Samplers.Length);
         Assert.Equal(snapshot.Samplers[1], snapshot.Samplers[2]);
         Assert.NotEqual(snapshot.Samplers[0], snapshot.Samplers[2]);
+        var previous = snapshot;
+        var expected = specialization.Clone();
+        var guard = Assert.IsType<ResourceMaterializer.SpecializationGuard>(plan.SpecializationGuard);
+        Assert.True(ResourceMaterializer.Materialize(plan, Inputs([]), ref snapshot, ref specialization));
+        Assert.Same(guard, plan.SpecializationGuard);
+        Assert.Equal(expected, specialization);
+        Assert.Equal(3, snapshot.Samplers.Length);
+        Assert.Equal(snapshot.Samplers[1], snapshot.Samplers[2]);
+        Assert.NotSame(previous.Samplers[1], snapshot.Samplers[2]);
     }
 
     [Fact]

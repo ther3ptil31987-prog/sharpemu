@@ -135,7 +135,7 @@ public static partial class ImageRequestBuilders
         }
 
         if (depthWords.CopyDepthToColor || depthWords.CopyStencilToColor || depthWords.CopyCentroid || depthWords.CopySample != 0 || depthWords.ZExpClear || depthWords.StencilExpClear ||
-            depthWords.ZPartiallyResident || depthWords.StencilPartiallyResident || depthWords.MaxMip != 0 || depthWords.ViewMipLevel != 0 || unsupportedShadingRate ||
+            depthWords.MaxMip != 0 || depthWords.ViewMipLevel != 0 || unsupportedShadingRate ||
             depthAddress == 0 || (!copyMode && !depthWords.DepthWriteDisabled && depthWords.ZWriteBase != depthWords.ZReadBase) || (depthAddress & 0xFFFF) != 0 || depthWords.DepthCompare > 7)
         {
             throw SubmissionScheduler.Fatal(
