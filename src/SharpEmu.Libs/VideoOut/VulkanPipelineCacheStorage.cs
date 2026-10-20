@@ -22,7 +22,7 @@ internal static class VulkanPipelineCacheStorage
         }
 
         return Path.GetFullPath(Path.Combine(
-            AppContext.BaseDirectory,
+            SharpEmuPaths.DataRoot,
             "user",
             "pipeline_cache",
             SanitizeTitleId(titleId),

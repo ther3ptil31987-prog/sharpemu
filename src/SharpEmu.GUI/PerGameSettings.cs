@@ -64,7 +64,7 @@ public sealed class PerGameSettings
         CustomEnvironmentVariables is null;
 
     public static string DirectoryPath =>
-        Path.Combine(AppContext.BaseDirectory, "user", "custom_configs");
+        Path.Combine(SharpEmu.Libs.SharpEmuPaths.DataRoot, "user", "custom_configs");
 
     public static string PathFor(string titleId) =>
         Path.Combine(DirectoryPath, SanitizeTitleId(titleId) + ".json");

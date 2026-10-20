@@ -147,7 +147,7 @@ public sealed class SharpEmuRuntime : ISharpEmuRuntime
 
         var mountRoot = Path.GetDirectoryName(fullPath);
 
-        return _selfLoader.Load(bytes.AsSpan(), _virtualMemory, _moduleManager, _fileSystem, mountRoot);
+        return _selfLoader.Load(bytes.AsSpan(), _virtualMemory, _moduleManager, _fileSystem, mountRoot, Path.GetFileName(fullPath));
     }
 
     public OrbisGen2Result Run(string ebootPath)
@@ -824,7 +824,8 @@ public sealed class SharpEmuRuntime : ISharpEmuRuntime
                     _virtualMemory,
                     _moduleManager,
                     _fileSystem,
-                    Path.GetDirectoryName(modulePath));
+                    Path.GetDirectoryName(modulePath),
+                    Path.GetFileName(modulePath));
 
                 mergedImportCount += MergeImportStubs(importStubs, moduleImage.ImportStubs, modulePath);
                 mergedSymbolCount += MergeRuntimeSymbols(runtimeSymbols, moduleImage.RuntimeSymbols);
@@ -896,7 +897,8 @@ public sealed class SharpEmuRuntime : ISharpEmuRuntime
                     _virtualMemory,
                     _moduleManager,
                     _fileSystem,
-                    Path.GetDirectoryName(modulePath));
+                    Path.GetDirectoryName(modulePath),
+                    Path.GetFileName(modulePath));
                 var candidateImportStubs = new Dictionary<ulong, string>(activeImportStubs);
                 var candidateRuntimeSymbols = new Dictionary<string, ulong>(activeRuntimeSymbols, StringComparer.Ordinal);
                 _ = MergeImportStubs(candidateImportStubs, moduleImage.ImportStubs, modulePath);

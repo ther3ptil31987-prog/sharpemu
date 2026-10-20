@@ -112,6 +112,8 @@ You can set them per game or globally in the GUI, or pass them directly through 
 A Vulkan-capable GPU and current graphics driver are required. The macOS
 release includes the MoltenVK Vulkan implementation.
 
+See [Game patches](docs/patches.md) for downloading, enabling and writing game patches.
+
 > [!IMPORTANT]  
 > This project does **not** support or condone piracy.  
 > All games used during development and testing are dumped from consoles that we personally own.  

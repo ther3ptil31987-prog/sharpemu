@@ -5425,7 +5425,7 @@ public static partial class KernelMemoryCompatExports
 
     private static string ResolveGameLogRoot() =>
         Path.GetFullPath(Path.Combine(
-            AppContext.BaseDirectory,
+            SharpEmuPaths.DataRoot,
             "user",
             "game_logs",
             Volatile.Read(ref _applicationTitleId)));
@@ -5443,7 +5443,7 @@ public static partial class KernelMemoryCompatExports
 
         var invalidChars = Path.GetInvalidFileNameChars();
         appName = new string(appName.Select(ch => invalidChars.Contains(ch) ? '_' : ch).ToArray());
-        return Path.Combine(AppContext.BaseDirectory, "user", "temp", appName);
+        return Path.Combine(SharpEmuPaths.DataRoot, "user", "temp", appName);
     }
 
     private static void EnsureOpenParentDirectoryExists(string guestPath, string hostPath, int flags)

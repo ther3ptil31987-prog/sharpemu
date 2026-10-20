@@ -29,7 +29,7 @@ public static partial class WindowsCrashCapture
         try
         {
             var logPath = string.IsNullOrWhiteSpace(logFilePath)
-                ? Path.Combine(AppContext.BaseDirectory, "user", "logs", $"run-{DateTime.UtcNow:yyyyMMdd-HHmmss}.log")
+                ? Path.Combine(SharpEmu.Libs.SharpEmuPaths.DataRoot, "user", "logs", $"run-{DateTime.UtcNow:yyyyMMdd-HHmmss}.log")
                 : Path.GetFullPath(logFilePath);
             var dumpPath = Path.ChangeExtension(logPath, $"crash-{Environment.ProcessId}.dmp");
             Directory.CreateDirectory(Path.GetDirectoryName(dumpPath)!);

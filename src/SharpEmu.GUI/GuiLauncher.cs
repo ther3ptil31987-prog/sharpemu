@@ -36,7 +36,7 @@ public static class GuiLauncher
         try
         {
             File.AppendAllText(
-                Path.Combine(AppContext.BaseDirectory, "gui-crash.log"),
+                Path.Combine(SharpEmu.Libs.SharpEmuPaths.DataRoot, "gui-crash.log"),
                 $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {ex}{Environment.NewLine}{Environment.NewLine}");
         }
         catch (Exception)

@@ -522,9 +522,10 @@ public sealed partial class RenderExecutor
             return RefuseBoundedFill(program, "value unreadable");
         }
 
-        if (fill.PatternLength is { } lengthWord)
+        if (fill.Pattern is { } pattern)
         {
-            if (fill.Pattern is not { } pattern || !TryResolveFillWord(lengthWord, userData, out var length) || length == 0 || length > pattern.Length)
+            var length = (uint)pattern.Length;
+            if (fill.PatternLength is { } lengthWord && (!TryResolveFillWord(lengthWord, userData, out length) || length == 0 || length > pattern.Length))
             {
                 return RefuseBoundedFill(program, "pattern length");
             }

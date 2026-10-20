@@ -1154,7 +1154,7 @@ internal static class CompiledShaderDump
         var directory = Environment.GetEnvironmentVariable("SHARPEMU_SHADER_SPIRV_DUMP_DIR");
         if (string.IsNullOrWhiteSpace(directory))
         {
-            directory = Path.Combine(AppContext.BaseDirectory, "shader-dumps");
+            directory = Path.Combine(SharpEmuPaths.DataRoot, "shader-dumps");
         }
 
         Directory.CreateDirectory(directory);

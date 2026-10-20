@@ -470,9 +470,9 @@ internal static class AmprFileRegistry
         catch (Exception exception) when (exception is UnauthorizedAccessException or IOException)
         {
             // Sandboxed launches and mitigated child processes can lose access
-            // to the profile AppData directory. Keep the index beside the
-            // executable so the next launch can still reuse it.
-            cacheDir = Path.Combine(AppContext.BaseDirectory, "user", "ampr-index");
+            // to the profile AppData directory. Keep the index in the user
+            // data root so the next launch can still reuse it.
+            cacheDir = Path.Combine(SharpEmuPaths.DataRoot, "user", "ampr-index");
             Directory.CreateDirectory(cacheDir);
             Console.Error.WriteLine(
                 $"[LOADER][WARN] ampr.app0_index_cache_fallback path={cacheDir}: {exception.Message}");

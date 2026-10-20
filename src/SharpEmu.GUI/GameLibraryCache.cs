@@ -26,7 +26,7 @@ internal static class GameLibraryCache
     };
 
     internal static string CachePath =>
-        Path.Combine(AppContext.BaseDirectory, "user", "library_cache.json");
+        Path.Combine(SharpEmu.Libs.SharpEmuPaths.DataRoot, "user", "library_cache.json");
 
     internal sealed class CachedGame
     {

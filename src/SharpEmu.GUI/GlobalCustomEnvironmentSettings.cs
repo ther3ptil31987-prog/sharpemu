@@ -15,7 +15,7 @@ internal sealed class GlobalCustomEnvironmentSettings
     public List<string> EnvironmentVariables { get; set; } = new();
 
     public static string FilePath =>
-        Path.Combine(AppContext.BaseDirectory, "user", "custom_envs.json");
+        Path.Combine(SharpEmu.Libs.SharpEmuPaths.DataRoot, "user", "custom_envs.json");
 
     public static IReadOnlyList<string> Load()
     {

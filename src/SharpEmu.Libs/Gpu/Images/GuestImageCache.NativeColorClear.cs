@@ -16,7 +16,11 @@ public sealed unsafe partial class GuestImageCache
         var range = metadata.Range;
         // Native metadata writes must finish before image discovery and final draw uploads.
         if (_bufferCache.HasGpuDirtyBytes(range.Address, range.Size))
+        {
+            if (Diagnostics.DccWriterTrace.Enabled)
+                Diagnostics.DccWriterTrace.ReportSync(range.Address, range.Size);
             _bufferCache.ReadMemory(range.Address, range.Size);
+        }
     }
 
     internal void ApplyNativeColorClear(ResourceSlotIdentifier imageIdentifier, in ImageRequest request)

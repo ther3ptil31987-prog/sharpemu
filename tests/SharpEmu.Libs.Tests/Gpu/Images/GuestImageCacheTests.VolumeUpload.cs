@@ -18,7 +18,7 @@ public sealed partial class GuestImageCacheTests
         if (Environment.GetEnvironmentVariable("SHARPEMU_DUMP_VOLUME_UPLOADS") != "1") return;
         if (!GatePrerequisites.Ready(_vulkan)) return;
         Assert.True(_vulkan.ValidationEnabled);
-        var directory = Path.Combine(AppContext.BaseDirectory, "user", "logs", "volume-uploads");
+        var directory = Path.Combine(SharpEmuPaths.DataRoot, "user", "logs", "volume-uploads");
         var previous = Directory.Exists(directory)
             ? Directory.GetFiles(directory, "*.json", SearchOption.AllDirectories).ToHashSet()
             : new HashSet<string>();
