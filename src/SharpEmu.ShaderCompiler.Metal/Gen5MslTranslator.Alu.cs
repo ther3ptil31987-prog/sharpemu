@@ -252,8 +252,22 @@ public static partial class Gen5MslTranslator
                 "VCvtF32I32" => FloatResult(instruction, $"(float)as_type<int>({RawSource(instruction, 0)})"),
                 "VCvtF32U32" => FloatResult(instruction, $"(float)({RawSource(instruction, 0)})"),
                 "VCvtU32F32" => $"(uint)({F(instruction, 0)})",
-                "VCvtU16F16" =>
-                    $"(uint)clamp(trunc(isnan({F16(instruction, 0)}) ? 0.0f : {F16(instruction, 0)}), 0.0f, 65535.0f)",
+                "VCvtU16F16" => HalfResult(
+                    instruction,
+                    destination,
+                    $"(uint)clamp(trunc(isnan({F16(instruction, 0)}) ? 0.0f : {F16(instruction, 0)}), 0.0f, 65535.0f)"),
+                "VCvtF16U16" => Float16Result(
+                    instruction,
+                    destination,
+                    $"(float){I16(instruction, 0, signed: false)}"),
+                "VCvtF16I16" => Float16Result(
+                    instruction,
+                    destination,
+                    $"(float){I16(instruction, 0, signed: true)}"),
+                "VCvtI16F16" => HalfResult(
+                    instruction,
+                    destination,
+                    $"(as_type<uint>((int)clamp(trunc(isnan({F16(instruction, 0)}) ? 0.0f : {F16(instruction, 0)}), -32768.0f, 32767.0f)) & 0xFFFFu)"),
                 "VCvtI32F32" => AsUInt($"(int)({F(instruction, 0)})"),
                 // RPI rounds toward positive infinity; FLR toward negative.
                 "VCvtRpiI32F32" => AsUInt($"(int)ceil({F(instruction, 0)})"),
@@ -262,10 +276,12 @@ public static partial class Gen5MslTranslator
                 "VCvtF32Ubyte1" => FloatResult(instruction, $"(float)((({RawSource(instruction, 0)}) >> 8) & 0xFFu)"),
                 "VCvtF32Ubyte2" => FloatResult(instruction, $"(float)((({RawSource(instruction, 0)}) >> 16) & 0xFFu)"),
                 "VCvtF32Ubyte3" => FloatResult(instruction, $"(float)((({RawSource(instruction, 0)}) >> 24) & 0xFFu)"),
-                "VCvtF16F32" =>
-                    $"((uint)as_type<ushort>(half({F(instruction, 0)})))",
+                "VCvtF16F32" => HalfResult(
+                    instruction,
+                    destination,
+                    $"((uint)as_type<ushort>(half({ApplyOutputModifiers(instruction, F(instruction, 0))})))"),
                 "VCvtF32F16" =>
-                    AsUInt($"(float)as_type<half>((ushort)(({RawSource(instruction, 0)}) & 0xFFFFu))"),
+                    FloatResult(instruction, $"(float)as_type<half>((ushort)(({RawSource(instruction, 0)}) & 0xFFFFu))"),
                 "VCvtOffF32I4" =>
                     AsUInt($"sharpemu_off_i4_table[({RawSource(instruction, 0)}) & 15u]"),
                 "VCvtPkU8F32" =>
@@ -291,10 +307,10 @@ public static partial class Gen5MslTranslator
                     $"(({RawSource(instruction, 1)}) - ({RawSource(instruction, 0)}))",
                 "VMulI32I24" =>
                     EmitSignedMultiply24(instruction),
-                // The SPIR-V translator treats the U24 multiply as a full 32-bit
-                // multiply (only the Hi/Mad forms mask); mirror it exactly.
-                "VMulLoU32" or "VMulLoI32" or "VMulU32U24" =>
+                "VMulLoU32" or "VMulLoI32" =>
                     $"(({RawSource(instruction, 0)}) * ({RawSource(instruction, 1)}))",
+                "VMulU32U24" =>
+                    $"((({RawSource(instruction, 0)}) & 0xFFFFFFu) * (({RawSource(instruction, 1)}) & 0xFFFFFFu))",
                 "VMulHiU32" =>
                     $"mulhi({RawSource(instruction, 0)}, {RawSource(instruction, 1)})",
                 "VMulHiU32U24" =>
@@ -304,7 +320,7 @@ public static partial class Gen5MslTranslator
                 "VMadU32U24" =>
                     $"(((({RawSource(instruction, 0)}) & 0xFFFFFFu) * (({RawSource(instruction, 1)}) & 0xFFFFFFu)) + ({RawSource(instruction, 2)}))",
                 "VMadU32U16" =>
-                    $"(((({RawSource(instruction, 0)}) & 0xFFFFu) * (({RawSource(instruction, 1)}) & 0xFFFFu)) + ({RawSource(instruction, 2)}))",
+                    $"((({I16(instruction, 0, signed: false)}) * ({I16(instruction, 1, signed: false)})) + ({RawSource(instruction, 2)}))",
                 "VAdd3U32" =>
                     $"(({RawSource(instruction, 0)}) + ({RawSource(instruction, 1)}) + ({RawSource(instruction, 2)}))",
                 "VXadU32" =>
@@ -690,14 +706,14 @@ public static partial class Gen5MslTranslator
             else if (opcode is
                      "VCmpTruF32" or "VCmpxTruF32" or
                      "VCmpTruF16" or "VCmpxTruF16" or
-                     "VCmpTI32" or "VCmpTU32")
+                     "VCmpTI32" or "VCmpxTI32" or "VCmpTU32" or "VCmpxTU32")
             {
                 condition = "true";
             }
             else if (opcode is
                      "VCmpFF32" or "VCmpxFF32" or
                      "VCmpFF16" or "VCmpxFF16" or
-                     "VCmpFI32" or "VCmpFU32")
+                     "VCmpFI32" or "VCmpxFI32" or "VCmpFU32" or "VCmpxFU32")
             {
                 condition = "false";
             }
@@ -1984,41 +2000,66 @@ public static partial class Gen5MslTranslator
         {
             var bits = MinimumHalfBits(ReadMinimumHalfBits(instruction, 0), ReadMinimumHalfBits(instruction, 1));
             if (ternary) bits = MinimumHalfBits(bits, ReadMinimumHalfBits(instruction, 2));
-            var control = instruction.Control as Gen5Vop3Control;
-            var modifier = _request.IeeeMode ? 0u : control?.OutputModifier ?? 0u;
+            var (outputModifier, clamp) = instruction.Control switch
+            {
+                Gen5Vop3Control vop3 => (vop3.OutputModifier, vop3.Clamp),
+                Gen5SdwaControl sdwa => (sdwa.OutputModifier, sdwa.Clamp),
+                _ => (0u, false),
+            };
+            var modifier = _request.IeeeMode ? 0u : outputModifier;
             if (modifier != 0)
             {
                 var scale = modifier == 1 ? "2.0f" : modifier == 2 ? "4.0f" : "0.5f";
                 bits = Temp("uint", $"(({bits} & 0x7FFFu) > 0x7C00u ? {bits} : " +
                     $"(uint)as_type<ushort>(half((float)as_type<half>((ushort){bits}) * {scale})))");
             }
-            if (control?.Clamp == true)
+            if (clamp)
                 bits = Temp("uint", $"((({bits} & 0x8000u) != 0u || ({bits} & 0x7FFFu) > 0x7C00u) ? 0u : min({bits}, 0x3C00u))");
-            return ((control?.OperandSelect ?? 0) & 8) != 0
-                ? $"((v[{destination}] & 0x0000FFFFu) | ({bits} << 16))"
-                : $"((v[{destination}] & 0xFFFF0000u) | {bits})";
+            return HalfResult(instruction, destination, bits);
         }
 
-        /// <summary>Rounds to f16 and preserves the unselected VGPR half.</summary>
+        /// <summary>Reads the selected 16-bit half as an integer, sign-extended when requested.</summary>
+        private string I16(Gen5ShaderInstruction instruction, int sourceIndex, bool signed)
+        {
+            var raw = RawSource(
+                instruction,
+                sourceIndex,
+                applySdwaIntegerModifiers: false);
+            var shift = instruction.Control is Gen5Vop3Control control &&
+                (control.OperandSelect & (1u << sourceIndex)) != 0
+                    ? 16
+                    : 0;
+            var half = $"((({raw}) >> {shift}) & 0xFFFFu)";
+            return signed ? $"int(short({half}))" : half;
+        }
+
+        /// <summary>
+        /// Rounds to f16 and preserves the unselected VGPR half. An SDWA word picks the field and what
+        /// becomes of the rest of the register itself.
+        /// </summary>
         private string Float16Result(
             Gen5ShaderInstruction instruction,
             uint destination,
             string expression)
         {
-            var control = instruction.Control as Gen5Vop3Control;
-            expression = (control?.OutputModifier ?? 0) switch
+            return HalfResult(instruction, destination, $"(uint)as_type<ushort>(half({ApplyOutputModifiers(instruction, expression)}))");
+        }
+
+        /// <summary>
+        /// Places a 16-bit result in the VGPR half that op_sel names and preserves the other half; the conversions to a half
+        /// and from a half to a 16-bit integer are 16-bit results too. An SDWA word places the result itself.
+        /// </summary>
+        private static string HalfResult(
+            Gen5ShaderInstruction instruction,
+            uint destination,
+            string packed)
+        {
+            if (instruction.Control is Gen5SdwaControl)
             {
-                1 => $"(({expression}) * 2.0f)",
-                2 => $"(({expression}) * 4.0f)",
-                3 => $"(({expression}) * 0.5f)",
-                _ => expression,
-            };
-            if (control?.Clamp == true)
-            {
-                expression = $"clamp({expression}, 0.0f, 1.0f)";
+                return $"({packed})";
             }
 
-            var packed = $"(uint)as_type<ushort>(half({expression}))";
+            var control = instruction.Control as Gen5Vop3Control;
             return ((control?.OperandSelect ?? 0) & 8) != 0
                 ? $"((v[{destination}] & 0x0000FFFFu) | (({packed}) << 16))"
                 : $"((v[{destination}] & 0xFFFF0000u) | ({packed}))";
@@ -2028,7 +2069,10 @@ public static partial class Gen5MslTranslator
         /// Wraps a float expression with VOP3/SDWA output modifiers and clamp,
         /// then bitcasts back to the register file's uint domain.
         /// </summary>
-        private string FloatResult(Gen5ShaderInstruction instruction, string expression)
+        private string FloatResult(Gen5ShaderInstruction instruction, string expression) =>
+            AsUInt($"({ApplyOutputModifiers(instruction, expression)})");
+
+        private static string ApplyOutputModifiers(Gen5ShaderInstruction instruction, string expression)
         {
             var (outputModifier, clamp) = instruction.Control switch
             {
@@ -2048,7 +2092,7 @@ public static partial class Gen5MslTranslator
                 expression = $"clamp({expression}, 0.0f, 1.0f)";
             }
 
-            return AsUInt($"({expression})");
+            return expression;
         }
 
         /// <summary>The lane's bit of a mask operand (VCC/EXEC/SGPR mask).</summary>

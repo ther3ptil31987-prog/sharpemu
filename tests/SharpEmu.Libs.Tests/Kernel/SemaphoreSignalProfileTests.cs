@@ -62,7 +62,7 @@ public sealed class SemaphoreSignalProfileTests
             GuestThreadExecution.Scheduler = scheduler;
             SemaphoreSignalProfile.StartSession();
             var result = KernelSemaphoreCompatExports.KernelSignalSema(context, handle, count);
-            Assert.Equal(succeeds ? 0 : (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT, result);
+            Assert.Equal(succeeds ? 0 : unchecked((int)0x80020016), result);
             Assert.Equal(succeeds ? 1 : 0, proxy.WakeCalls);
             if (succeeds) Assert.Equal($"sceKernelWaitSema:{handle:X8}", proxy.WakeKey);
             context[CpuRegister.Rdi] = memoryBase;

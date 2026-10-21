@@ -444,6 +444,8 @@ public static partial class Gen5SpirvTranslator
                 ShiftLeftLogical(UInt(waveCount), UInt(28)));
             StoreS(3, BitwiseOr(waveInfo, BitwiseOr(waveVertices,
                 ShiftLeftLogical(wavePrimitives, UInt(8)))));
+            // The thread group's vertex and primitive counts, as the vertex route stores them in s2.
+            StoreS(2, BitwiseOr(ShiftLeftLogical(vertices, UInt(12)), ShiftLeftLogical(primitives, UInt(22))));
 
             var first = _module.AddInstruction(SpirvOp.IMul, _uintType, lane, UInt(primitiveVertexStep));
             var second = mesh.InputPointList ? UInt(0) : IAdd(first, UInt(1));

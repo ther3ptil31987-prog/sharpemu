@@ -2293,7 +2293,16 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
         // host-identical, matching the tracker's fault addresses.
         GuestImageWriteTracker.NotifyManagedWrite(virtualAddress, (ulong)source.Length);
         GuestGpuMemoryHook.MarkCpuWrite(virtualAddress, (ulong)source.Length);
+        var written = TryWriteCore(virtualAddress, source);
 
+        // Backed writes go through an alias no page watch covers: an upload between the mark above
+        // and the write took the old bytes and left the pages clean, and no fault reports the new ones.
+        GuestGpuMemoryHook.MarkCpuWriteLanded(virtualAddress, (ulong)source.Length);
+        return written;
+    }
+
+    private bool TryWriteCore(ulong virtualAddress, ReadOnlySpan<byte> source)
+    {
         if (!source.IsEmpty && _backedSpace is { } backed && !_disposed &&
             backed.TryWriteSingleView(virtualAddress, source))
         {
@@ -2398,7 +2407,15 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
         // identity-mapped guest page protected by the image tracker.
         GuestImageWriteTracker.NotifyManagedWrite(destinationAddress, length);
         GuestGpuMemoryHook.MarkCpuWrite(destinationAddress, length);
+        var copied = TryCopyCore(destinationAddress, sourceAddress, length);
 
+        // As in TryWrite: an upload after the mark may have taken the bytes from before the copy.
+        GuestGpuMemoryHook.MarkCpuWriteLanded(destinationAddress, length);
+        return copied;
+    }
+
+    private bool TryCopyCore(ulong destinationAddress, ulong sourceAddress, ulong length)
+    {
         _gate.EnterReadLock();
         try
         {

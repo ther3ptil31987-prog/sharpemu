@@ -212,6 +212,8 @@ public sealed class PixelInputInfo
     public uint PerspectiveCenterRegister { get; init; } = NoPerspectiveCenterRegister;
     public uint[] InterpolatorSettings { get; init; } = new uint[InterpolatorCount];
     public byte[] TargetOutputModes { get; init; } = new byte[TargetCount];
+    // SPI_SHADER_COL_FORMAT of each EXP target.
+    public byte[] TargetExportFormats { get; init; } = new byte[TargetCount];
     public ColorComponentMap[] TargetExportMappings { get; init; } = new ColorComponentMap[TargetCount];
     public bool IeeeMode { get; set; }
     public uint ScratchDwords { get; init; }

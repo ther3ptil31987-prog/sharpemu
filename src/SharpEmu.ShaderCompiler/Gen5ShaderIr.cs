@@ -119,6 +119,16 @@ public readonly record struct Gen5ColorComponentMapping
     }
 }
 
+// SPI_SHADER_COL_FORMAT: what a compressed EXP of a color target carries in each half of a register.
+public enum Gen5PixelExportFormat : byte
+{
+    Float16 = 4,
+    Unorm16 = 5,
+    Snorm16 = 6,
+    Uint16 = 7,
+    Sint16 = 8,
+}
+
 public readonly record struct Gen5PixelOutputBinding(
     uint GuestSlot,
     uint HostLocation,
@@ -150,6 +160,9 @@ public readonly record struct Gen5PixelOutputBinding(
     // The fragment output index: 1 is the second source of dual-source blending, which
     // shares its location with the first and is not a render target.
     public uint Index { get; init; }
+
+    // The format of the export that feeds this slot.
+    public Gen5PixelExportFormat ExportFormat { get; init; } = Gen5PixelExportFormat.Float16;
 }
 
 public readonly record struct Gen5ComputeSystemRegisters(

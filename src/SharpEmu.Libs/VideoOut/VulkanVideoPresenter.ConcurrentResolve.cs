@@ -119,6 +119,7 @@ internal static unsafe partial class VulkanVideoPresenter
                 return false;
             }
 
+            CompletePendingPublicationsForResourceRead(address, sizeof(uint));
             var dirty = _bufferCache.HasGpuDirtyBytes(address, sizeof(uint));
             assumptions.Record(ConcurrentQuery.DirtyBytes, address, sizeof(uint), dirty);
             if (dirty)
@@ -144,6 +145,7 @@ internal static unsafe partial class VulkanVideoPresenter
                 return false;
             }
 
+            CompletePendingPublicationsForResourceRead(address, size);
             var owned = IsGpuOwnedForResidentRead(address, size, clean);
             assumptions.Record(clean ? ConcurrentQuery.ResidentClean : ConcurrentQuery.Resident, address, size, owned);
             return !owned && _guestMemory.TryRead(address, destination);

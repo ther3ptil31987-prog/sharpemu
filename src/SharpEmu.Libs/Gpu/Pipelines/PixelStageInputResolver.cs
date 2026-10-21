@@ -110,6 +110,7 @@ public static class PixelStageInputResolver
                 : PixelInputInfo.NoPerspectiveCenterRegister,
             InterpolatorSettings = interpolators,
             TargetOutputModes = outputModes,
+            TargetExportFormats = shaderInterface.TargetOutputModes.ToArray(),
             TargetExportMappings = mappings,
             ScratchDwords = shader.ScratchDwords,
             PositionX = (activeInputs & InputPositionX) != 0,

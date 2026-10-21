@@ -482,7 +482,8 @@ public sealed partial class RenderExecutor
             0,
             (uint)vertexOffset,
             indirect ? arguments.FirstInstance : ResolveInstanceOffset(vertexInput));
-        var disposition = RecordDraw(submitId, banks, in draw, ref state, topology, in emission, default, primitiveRestart: false, setBindDebug: false, setAutoDebug: true);
+        var disposition = RecordDraw(submitId, banks, in draw, ref state, topology, in emission, default, primitiveRestart: false, setBindDebug: false, setAutoDebug: true,
+            packetAddress: arguments.PacketAddress);
         TraceDrawTargets(banks, disposition);
         _host.ResetBindings();
     }

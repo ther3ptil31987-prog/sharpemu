@@ -423,6 +423,7 @@ internal sealed partial class ShaderPipelineCache : IShaderPipelineProvider
             outputs.Add(new Gen5PixelOutputBinding(slot, location++, kind, mapping)
             {
                 ExportTarget = exportTarget >= 0 ? (uint)exportTarget : ContextRegisters.ColorTargetCount + slot,
+                ExportFormat = ExportFormatOf(context.ShaderInterface, exportTarget),
             });
         }
 
@@ -439,8 +440,8 @@ internal sealed partial class ShaderPipelineCache : IShaderPipelineProvider
             }
 
             // EXP1 supplies the second source for target zero, not a second attachment.
-            outputs[0] = outputs[0] with { ExportTarget = 0 };
-            outputs.Add(outputs[0] with { GuestSlot = 1, ExportTarget = 1, Index = 1 });
+            outputs[0] = outputs[0] with { ExportTarget = 0, ExportFormat = ExportFormatOf(context.ShaderInterface, 0) };
+            outputs.Add(outputs[0] with { GuestSlot = 1, ExportTarget = 1, Index = 1, ExportFormat = ExportFormatOf(context.ShaderInterface, 1) });
             outputModes[0] = (byte)(((uint)outputs[0].Kind + 1) | 0x10u);
             outputModes[1] = DualSourceOutputMode;
         }
@@ -459,6 +460,12 @@ internal sealed partial class ShaderPipelineCache : IShaderPipelineProvider
     }
 
     private const byte DualSourceOutputMode = 0xFF;
+
+    // SPI_SHADER_COL_FORMAT of an EXP target; a slot no export feeds keeps the default.
+    private static Gen5PixelExportFormat ExportFormatOf(ShaderInterfaceRegisters shaderInterface, int exportTarget) =>
+        exportTarget >= 0 && exportTarget < shaderInterface.TargetOutputModes.Length
+            ? (Gen5PixelExportFormat)shaderInterface.TargetOutputModes[exportTarget]
+            : Gen5PixelExportFormat.Float16;
 
     // BLEND_SRC1_COLOR, BLEND_ONE_MINUS_SRC1_COLOR, BLEND_SRC1_ALPHA, BLEND_ONE_MINUS_SRC1_ALPHA.
     internal static bool UsesSecondBlendSource(in BlendRegisters blend)

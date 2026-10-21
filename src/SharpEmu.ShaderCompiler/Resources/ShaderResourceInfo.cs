@@ -21,6 +21,8 @@ public enum ImageNumericClass : byte
     Float,
     Uint,
     Sint,
+    // A 64-bit unsigned view of a 64 bits per texel image; only image atomics use it.
+    Uint64,
 }
 
 public enum ImageMipMode : byte
@@ -72,6 +74,8 @@ public sealed class ImageResource
     public bool Read { get; set; }
     public bool Written { get; set; }
     public bool Atomic { get; set; }
+    // An atomic on two data dwords (compare-swap: four), which works on 64-bit texels.
+    public bool Atomic64 { get; set; }
     public bool DepthCompare { get; set; }
     // Guest compare function (0..7) evaluated in the shader for a depth-compare
     // image whose format has no Vulkan depth equivalent; -1 when not emulated.
@@ -214,6 +218,10 @@ public sealed record IndirectImageSelector(
     public uint DynamicOffsetBase { get; init; }
     public uint KeyBound { get; init; }
     public WaveIndexedImageSelector? WaveIndexed { get; init; }
+
+    // The key is selected by a value the whole wave shares (a loop counter), not by a lane's value. Such an image
+    // used to read as a null image, so a table the host cannot read stays null instead of failing the program.
+    public bool SharedSelector { get; init; }
 
     // The key read's immediate offset. The hardware adds it after the 32-bit selector offset, without wrapping.
     public uint MaterialImmediate { get; init; }

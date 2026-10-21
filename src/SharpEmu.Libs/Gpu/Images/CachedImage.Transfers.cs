@@ -50,7 +50,17 @@ public sealed unsafe partial class CachedImage
             range = range.Value with { BaseLayer = 0, LayerCount = 1 };
         }
 
-        var levels = Description.Resources.Levels;
+        // Barriers name host levels; the guest's levels past the host mip chain map to the last host level.
+        var levels = Backing.MipLevels;
+        var guestLevels = Description.Resources.Levels;
+        if (range is { } requested && levels != 0 && levels < guestLevels && requested.LevelCount != 0 &&
+            requested.BaseLevel < guestLevels && requested.LevelCount <= guestLevels - requested.BaseLevel &&
+            requested.BaseLevel + requested.LevelCount > levels)
+        {
+            range = requested.BaseLevel >= levels
+                ? requested with { BaseLevel = levels - 1, LevelCount = 1 }
+                : requested with { LevelCount = levels - requested.BaseLevel };
+        }
         var layers = Description.Resources.Layers;
         var partial = range is { } window &&
                       (window.BaseLevel != 0 || window.LevelCount != levels || window.BaseLayer != 0 || window.LayerCount != layers);
@@ -288,11 +298,13 @@ public sealed unsafe partial class CachedImage
         }
         else if (sourceType == ImageType.Type2D && destinationType == ImageType.Type3D)
         {
-            sourceLayers = depth;
+            // An array fills at most as many slices as it has layers, and a volume at most as many layers as it has
+            // slices.
+            sourceLayers = Math.Min(depth, source.Backing.Layers);
         }
         else if (sourceType == ImageType.Type3D && destinationType == ImageType.Type2D)
         {
-            destinationLayers = depth;
+            destinationLayers = Math.Min(depth, destination.Backing.Layers);
         }
 
         return (sourceLayers, destinationLayers);
@@ -309,6 +321,12 @@ public sealed unsafe partial class CachedImage
         _scheduler.EndRendering();
         var levels = Math.Min(source.Backing.MipLevels, Backing.MipLevels);
         var baseDepth = Backing.ImageType == ImageType.Type3D ? Backing.Extent.Depth : source.Backing.Extent.Depth;
+        if (source.Backing.ImageType == ImageType.Type3D)
+        {
+            // A deeper destination has slices the source never had.
+            baseDepth = Math.Min(baseDepth, source.Backing.Extent.Depth);
+        }
+
         var sourceAspect = ViewFormatRules.FullAspects(source.Backing.Format) & ~ImageAspectFlags.StencilBit;
         var destinationAspect = ViewFormatRules.FullAspects(Backing.Format) & ~ImageAspectFlags.StencilBit;
         var copies = new ImageCopy[levels];

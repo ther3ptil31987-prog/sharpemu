@@ -18,13 +18,23 @@ internal static class DescriptorBindingAliases
         }
     }
 
-    public static List<uint> Group(IReadOnlyList<uint[]> descriptors)
+    // Images of an indirect table keep their own bindings (see Apply), so they take no part in a group: a table that pads
+    // its candidates with null images does not change the specialization of its program.
+    public static List<uint> Group(IReadOnlyList<uint[]> descriptors, IReadOnlyList<ImageSpecialization>? images = null)
     {
         if (descriptors.Count < 2) return [];
         var groups = new Dictionary<uint[], uint>(new WordComparer());
         var result = new List<uint>(descriptors.Count);
+        var ungrouped = 0;
         for (var index = 0; index < descriptors.Count; index++)
         {
+            if (images is not null && images[index].IndirectRoot != DescriptorConstants.NoIndex)
+            {
+                result.Add((uint)index);
+                ungrouped++;
+                continue;
+            }
+
             if (!groups.TryGetValue(descriptors[index], out var group))
             {
                 group = (uint)index;
@@ -32,7 +42,7 @@ internal static class DescriptorBindingAliases
             }
             result.Add(group);
         }
-        return groups.Count == descriptors.Count ? [] : result;
+        return groups.Count + ungrouped == descriptors.Count ? [] : result;
     }
 
     public static void Apply(ShaderResourceInfo info, ShaderResourceInfo source, ResourceSpecialization specialization)

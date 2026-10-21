@@ -36,14 +36,71 @@ public static class GameServiceStubs
         return Ok(ctx);
     }
 
+    // Writes an optional output structure; a null pointer means it was not requested.
+    private static bool WriteOutput(CpuContext ctx, ulong address, ReadOnlySpan<byte> value) =>
+        address == 0 || ctx.Memory.TryWrite(address, value);
+
+    private static void Increment(Span<byte> counter) =>
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(
+            counter, System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(counter) + 1);
+
     // ---- NpTrophy2: trophy context/handle registration at boot ----
     public static int NpTrophy2CreateContext(CpuContext ctx) => OkWithHandle(ctx, CpuRegister.Rdi);
     public static int NpTrophy2CreateHandle(CpuContext ctx) => OkWithHandle(ctx, CpuRegister.Rdi);
     public static int NpTrophy2RegisterContext(CpuContext ctx) => Ok(ctx);
 
+    // SceNpTrophy2GameDetails is six uint32 counters and a 128 byte title,
+    // SceNpTrophy2GameData six uint32 counters.
+    private const int NpTrophy2GameDetailsSize = 6 * sizeof(uint) + 128;
+    private const int NpTrophy2GameDataSize = 6 * sizeof(uint);
+
+    // Titles size their trophy arrays from the returned counts, so a success has to
+    // write them: left alone, they hold whatever the caller's heap held (an Unreal
+    // title resizes a TArray to it and aborts). The counts are those of the set
+    // sceNpTrophy2GetTrophyInfoArray returns, empty when the title ships none.
     [SysAbiExport(Nid = "4IzqhhUQ3nk", ExportName = "sceNpTrophy2GetGameInfo",
         Target = Generation.Gen4 | Generation.Gen5, LibraryName = "libSceNpTrophy2")]
-    public static int NpTrophy2GetGameInfo(CpuContext ctx) => Ok(ctx);
+    public static int NpTrophy2GetGameInfo(CpuContext ctx)
+    {
+        Span<byte> details = stackalloc byte[NpTrophy2GameDetailsSize];
+        Span<byte> data = stackalloc byte[NpTrophy2GameDataSize];
+        FillTrophy2GameInfo(details, data, SharpEmu.Libs.Np.TrophyService.Trophies);
+        return WriteOutput(ctx, ctx[CpuRegister.Rdx], details) &&
+            WriteOutput(ctx, ctx[CpuRegister.Rcx], data)
+                ? Ok(ctx)
+                : ctx.SetReturn(OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+    }
+
+    // The counts of SceNpTrophy2GameDetails and SceNpTrophy2GameData. The groups, the title and the
+    // progress stay zero.
+    internal static void FillTrophy2GameInfo(
+        Span<byte> details,
+        Span<byte> data,
+        IReadOnlyList<SharpEmu.Libs.Np.TrophyService.Trophy> trophies)
+    {
+        details.Clear();
+        data.Clear();
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(details[4..], (uint)trophies.Count);
+        foreach (var trophy in trophies)
+        {
+            // Grades 1 to 4 (platinum, gold, silver, bronze) follow numTrophies in the details
+            // and unlockedTrophies in the data.
+            var hasGrade = trophy.Grade is >= 1 and <= 4;
+            if (hasGrade)
+            {
+                Increment(details[(4 + (trophy.Grade * 4))..]);
+            }
+
+            if (trophy.Unlocked)
+            {
+                Increment(data);
+                if (hasGrade)
+                {
+                    Increment(data[(trophy.Grade * 4)..]);
+                }
+            }
+        }
+    }
 
     // ---- CES: Shift-JIS <-> Unicode conversion setup (Japanese text) ----
 

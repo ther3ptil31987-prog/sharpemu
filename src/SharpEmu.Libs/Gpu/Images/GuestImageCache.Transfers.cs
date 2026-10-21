@@ -129,11 +129,48 @@ public sealed unsafe partial class GuestImageCache
             }
 
             plan.Tiles = tiles;
+        }
+
+        // Guest levels past the host mip chain (CachedImage.MipChainLevels) have no host level to move:
+        // an upload leaves them out, a download leaves their guest bytes as they are.
+        DropLevelsWithoutHostLevel(plan, image.Backing.MipLevels);
+        if (plan.Tiled)
+        {
             plan.LinearSize = LinearSizeOf(plan.Tiles);
         }
 
         plan.Valid = true;
         return plan;
+    }
+
+    // The regions run level by level, so the levels to drop are the last ones. A tile starts at the linear
+    // offset of its first region (a volume tile spans several slices of one level).
+    private static void DropLevelsWithoutHostLevel(ColorTransferPlan plan, uint hostLevels)
+    {
+        var kept = plan.Regions.Count;
+        while (kept > 0 && plan.Regions[kept - 1].ImageSubresource.MipLevel >= hostLevels)
+        {
+            kept--;
+        }
+
+        if (kept == plan.Regions.Count)
+        {
+            return;
+        }
+
+        plan.Regions.RemoveRange(kept, plan.Regions.Count - kept);
+        if (!plan.Tiled)
+        {
+            return;
+        }
+
+        var offsets = new HashSet<ulong>(plan.Regions.Count);
+        foreach (var region in plan.Regions)
+        {
+            offsets.Add(region.BufferOffset);
+        }
+
+        plan.Tiles.RemoveAll(tile => !offsets.Contains(tile.LinearOffset));
     }
 
     private static Exception InvalidAttachmentUpload(in ImageDescription info, CachedImage image) =>
@@ -674,7 +711,12 @@ public sealed unsafe partial class GuestImageCache
             selected = proxy.DepthOwner;
         }
 
-        var image = _slots[selected];
+        return TryDownloadImageToBuffer(_slots[selected], buffer);
+    }
+
+    // Copies the levels of an image that fit into the buffer over the image's own range.
+    private bool TryDownloadImageToBuffer(CachedImage image, GpuBuffer buffer)
+    {
         ref readonly var info = ref image.Description;
         if (!buffer.IsInBounds(info.Data.Address, 1))
         {
@@ -743,12 +785,57 @@ public sealed unsafe partial class GuestImageCache
             }
         }
 
+        // A linear array's copy regions follow its slice stride and can end past the mip layout as well: cover
+        // them when the buffer holds them; otherwise keep the guest bytes.
+        if (!plan.Depth && !plan.Color.Tiled)
+        {
+            var linearEnd = TextureTransferLayout.CopyFootprint(plan.Color.Regions, plan.Color.Layout.Element);
+            if (linearEnd > copySize)
+            {
+                if (linearEnd > available)
+                {
+                    return false;
+                }
+
+                copySize = linearEnd;
+            }
+        }
+
+        // The mip layout can end before the tile plan does (Silent Hill: a 128x128 slice planned at
+        // the exact end of the mip chain aborted the process). Cover the whole plan when the buffer
+        // holds it; otherwise keep the guest bytes instead of copying a partial image.
+        if (!plan.Depth && plan.Color.Tiled)
+        {
+            var tiledEnd = TiledEndOf(plan.Color.Tiles);
+            if (tiledEnd > copySize)
+            {
+                if (tiledEnd > available)
+                {
+                    return false;
+                }
+
+                copySize = tiledEnd;
+            }
+        }
+
         DownloadToBuffer(image, buffer, bufferOffset, copySize, plan);
         image.MarkBufferHoldsGpuContents();
         return true;
     }
 
+    private static ulong TiledEndOf(List<TileTransfer> tiles)
+    {
+        var end = 0UL;
+        foreach (var tile in tiles)
+        {
+            end = Math.Max(end, tile.TiledOffset + tile.TiledSize);
+        }
+
+        return end;
+    }
+
     // Publishes a GPU-owned image to guest memory after its tick completes; false when it cannot.
+    // A guest store into the range before then is newer than the readback and keeps its page.
     private bool TryDownloadToGuest(ResourceSlotIdentifier imageIdentifier)
     {
         using var profileScope = RenderPhaseProfile.MeasureDetail(RenderPhaseProfile.Phase.ImageDownload);
@@ -783,6 +870,7 @@ public sealed unsafe partial class GuestImageCache
             return false;
         }
 
+        var landing = _readbackLandings.Queue(range.Address, download.Mapped.Slice((int)offset, (int)range.Size));
         download.Flush(offset, range.Size);
         DownloadToBuffer(image, download, offset, range.Size, plan);
         var barrier = new BufferMemoryBarrier2
@@ -799,12 +887,15 @@ public sealed unsafe partial class GuestImageCache
         _scheduler.EndRendering();
         VulkanSynchronization.PipelineBarrier(_device.Vk,new CommandBuffer(_scheduler.Current.Handle), PipelineStageFlags.AllCommandsBit, PipelineStageFlags.HostBit, 0, 0, null, 1, &barrier, 0, null);
         var backing = _backing;
+        var landingDecided = LandingDecidedForTest;
         _scheduler.QueuePriorityCompletionAction(() =>
         {
             download.Invalidate(offset, range.Size);
             GpuWritebackEpoch.Advance();
             var published = download.Mapped.Slice((int)offset, (int)range.Size);
-            if (!backing.TryWriteBacking(range.Address, published) &&
+            // A range that lost resident pages since it was queued cannot be compared page by page; its resident pages
+            // take the readback whole, as before the landing.
+            if (!landing.TryLand(backing, published, landingDecided) &&
                 !KernelMemoryCompatExports.TryWritePrtBacking(backing, range.Address, published))
             {
                 throw SubmissionScheduler.Fatal($"The image readback could not be written to guest memory: address=0x{range.Address:X16} size=0x{range.Size:X}.");

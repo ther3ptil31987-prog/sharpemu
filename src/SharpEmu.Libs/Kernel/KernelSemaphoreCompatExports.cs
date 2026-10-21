@@ -12,6 +12,10 @@ namespace SharpEmu.Libs.Kernel;
 public static class KernelSemaphoreCompatExports
 {
     private const int MaxSemaphoreNameLength = 128;
+    // These exports return kernel errno values, not the runtime's synthetic result codes.
+    private const OrbisGen2Result KernelInvalidArgument = unchecked((OrbisGen2Result)0x80020016);
+    private const OrbisGen2Result KernelNoSuchObject = unchecked((OrbisGen2Result)0x80020003);
+    private const OrbisGen2Result KernelBadAddress = unchecked((OrbisGen2Result)0x8002000E);
     private static readonly ConcurrentDictionary<uint, KernelSemaphoreState> _semaphores = new();
     private static int _nextSemaphoreHandle = 1;
 
@@ -49,13 +53,13 @@ public static class KernelSemaphoreCompatExports
             initialCount > maxCount ||
             optionAddress != 0)
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+            return SetReturn(ctx, KernelInvalidArgument);
         }
 
         if (!KernelMemoryCompatExports.TryReadNullTerminatedUtf8(
                 ctx, nameAddress, MaxSemaphoreNameLength, out var name))
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+            return SetReturn(ctx, KernelBadAddress);
         }
 
         var handle = unchecked((uint)Interlocked.Increment(ref _nextSemaphoreHandle));
@@ -76,7 +80,7 @@ public static class KernelSemaphoreCompatExports
         if (!ctx.TryWriteUInt64(semaphoreAddress, handle))
         {
             _semaphores.TryRemove(handle, out _);
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+            return SetReturn(ctx, KernelBadAddress);
         }
 
         if (_traceSema)
@@ -99,18 +103,18 @@ public static class KernelSemaphoreCompatExports
 
         if (!_semaphores.TryGetValue(handle, out var semaphore))
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND);
+            return SetReturn(ctx, KernelNoSuchObject);
         }
 
         if (needCount < 1 || needCount > semaphore.MaxCount)
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+            return SetReturn(ctx, KernelInvalidArgument);
         }
 
         uint timeoutUsec = 0;
         if (timeoutAddress != 0 && !TryReadUInt32(ctx, timeoutAddress, out timeoutUsec))
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+            return SetReturn(ctx, KernelBadAddress);
         }
 
         return WaitSemaphoreCore(
@@ -329,12 +333,12 @@ public static class KernelSemaphoreCompatExports
     {
         if (!_semaphores.TryGetValue(handle, out var semaphore))
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND);
+            return SetReturn(ctx, KernelNoSuchObject);
         }
 
         if (needCount < 1 || needCount > semaphore.MaxCount)
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+            return SetReturn(ctx, KernelInvalidArgument);
         }
 
         lock (semaphore.Gate)
@@ -368,15 +372,15 @@ public static class KernelSemaphoreCompatExports
         if (!_semaphores.TryGetValue(handle, out var semaphore))
         {
             signalTrace.Record(SemaphoreSignalProfile.Stage.Rejected,
-                result: (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND);
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND);
+                result: (int)KernelNoSuchObject);
+            return SetReturn(ctx, KernelNoSuchObject);
         }
 
         if (signalCount < 0)
         {
             signalTrace.Record(SemaphoreSignalProfile.Stage.Rejected,
-                result: (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+                result: (int)KernelInvalidArgument);
+            return SetReturn(ctx, KernelInvalidArgument);
         }
 
         lock (semaphore.Gate)
@@ -384,8 +388,8 @@ public static class KernelSemaphoreCompatExports
             if (semaphore.Count > semaphore.MaxCount - signalCount)
             {
                 signalTrace.Record(SemaphoreSignalProfile.Stage.Rejected,
-                    result: (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
-                return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+                    result: (int)KernelInvalidArgument);
+                return SetReturn(ctx, KernelInvalidArgument);
             }
 
             semaphore.Count += signalCount;
@@ -415,19 +419,19 @@ public static class KernelSemaphoreCompatExports
     {
         if (!_semaphores.TryGetValue(handle, out var semaphore))
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND);
+            return SetReturn(ctx, KernelNoSuchObject);
         }
 
         if (setCount > semaphore.MaxCount)
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT);
+            return SetReturn(ctx, KernelInvalidArgument);
         }
 
         lock (semaphore.Gate)
         {
             if (waitingThreadsAddress != 0 && !TryWriteUInt32(ctx, waitingThreadsAddress, unchecked((uint)semaphore.WaitingThreads)))
             {
-                return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+                return SetReturn(ctx, KernelBadAddress);
             }
 
             semaphore.Count = setCount < 0 ? semaphore.InitialCount : setCount;
@@ -453,7 +457,7 @@ public static class KernelSemaphoreCompatExports
         var handle = unchecked((uint)ctx[CpuRegister.Rdi]);
         if (!_semaphores.TryRemove(handle, out var semaphore))
         {
-            return SetReturn(ctx, OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND);
+            return SetReturn(ctx, KernelNoSuchObject);
         }
 
         if (_traceSema)
