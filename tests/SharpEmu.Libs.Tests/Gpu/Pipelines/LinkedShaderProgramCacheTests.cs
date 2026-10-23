@@ -24,8 +24,9 @@ public sealed class LinkedShaderProgramCacheTests
         using var fatal = new FatalScope();
         var guest = CreateGuest();
         var source = guest.Source(CodeAddress, ShaderStage.Compute, PipelineTestGuest.BufferDescriptor(TableAddress, 16, 1, 0));
-        var first = Compile(guest, source);
+        var first = Compile(guest, source, out var firstStage);
         Assert.Equal(first, Compile(guest, source));
+        Assert.Equal([0x3000ul], firstStage.CallArguments!);
         var request = Assert.Single(guest.Compiler.Requests);
         Assert.DoesNotContain(request.Program.Instructions, instruction => instruction.Opcode == "SSwappcB64");
         Assert.Equal(CodeAddress + 32, Assert.Single(request.Program.Instructions.Select(instruction => instruction.Control).OfType<ShaderCallEntryControl>()).ReturnAddress);
@@ -36,8 +37,12 @@ public sealed class LinkedShaderProgramCacheTests
             entry.Program.Instructions.Any(instruction => instruction.Opcode == "SSwappcB64")).HasShaderCalls);
         Assert.False(Assert.Single(guest.Programs.Entries, entry =>
             entry.Program.Instructions.All(instruction => instruction.Opcode != "SSwappcB64")).HasShaderCalls);
+        // A table rebuilt with its argument elsewhere keeps the program: the plan reads the argument from user data and
+        // the module compares it relative to the base the dispatch pushes.
         WriteRecord(guest, 0x4000);
-        Assert.NotEqual(first, Compile(guest, source));
+        Assert.Equal(first, Compile(guest, source, out var movedStage));
+        Assert.Equal([0x4000ul], movedStage.CallArguments!);
+        Assert.Equal(0x4000u, movedStage.Resources.UserData[(int)(ScalarValueGraph.CallArgumentRegisterBase - movedStage.Program!.UserDataBase)]);
         guest.WriteWords(FunctionAddress, 0xBF800001, 0xBE80200E);
         Assert.NotEqual(first, Compile(guest, source));
         RegisterCaller(guest, CodeAddress + 0x400, HeaderAddress + 0x100);
@@ -46,8 +51,103 @@ public sealed class LinkedShaderProgramCacheTests
         Compile(guest, relocated);
         Assert.Equal(CodeAddress + 0x400 + 32,
             Assert.Single(guest.Compiler.Requests[^1].Program.Instructions.Select(instruction => instruction.Control).OfType<ShaderCallEntryControl>()).ReturnAddress);
-        Assert.Equal(4, guest.Compiler.Requests.Count);
-        Assert.Equal(4, guest.Host.Modules.Count);
+        Assert.Equal(3, guest.Compiler.Requests.Count);
+        Assert.Equal(3, guest.Host.Modules.Count);
+    }
+
+    // A cache that defers linking links a new layout on a worker: the program is not ready, without a rejection, until
+    // the link is done, and then compiles as a synchronous link would.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void DeferredLinking_ReportsTheProgramPendingUntilItsLinkIsDone(bool strict)
+    {
+        using var fatal = new FatalScope();
+        var guest = CreateGuest();
+        var programs = new ShaderProgramCache(guest.Context, guest.Compiler, guest.Host) { DeferLinking = true };
+        var source = guest.Source(CodeAddress, ShaderStage.Compute, PipelineTestGuest.BufferDescriptor(TableAddress, 16, 1, 0));
+        var cursor = 0u;
+        Assert.False(programs.TryGetProgram(source, PipelineTestGuest.ComputeOptions(32), strict, ref cursor, out _, out _, out var rejection));
+        Assert.Empty(rejection);
+        Assert.Empty(guest.Compiler.Requests);
+        var deadline = DateTime.UtcNow.AddSeconds(30);
+        bool ready;
+        ShaderStageResources stage;
+        do
+        {
+            cursor = 0;
+            ready = programs.TryGetProgram(source, PipelineTestGuest.ComputeOptions(32), strict, ref cursor, out _, out stage, out rejection);
+            if (!ready) Thread.Sleep(1);
+        } while (!ready && rejection.Length == 0 && DateTime.UtcNow < deadline);
+        Assert.True(ready, rejection);
+        Assert.Equal([0x3000ul], stage.CallArguments!);
+        var request = Assert.Single(guest.Compiler.Requests);
+        Assert.DoesNotContain(request.Program.Instructions, instruction => instruction.Opcode == "SSwappcB64");
+    }
+
+    // The linked program's translation runs on a worker too, and the program stays pending until it is done.
+    [Fact]
+    public void DeferredLinking_TranslatesTheLinkedProgramOnAWorker()
+    {
+        using var fatal = new FatalScope();
+        using var release = new ManualResetEventSlim();
+        var testThread = Environment.CurrentManagedThreadId;
+        var translationThread = -1;
+        var guest = CreateGuest(request =>
+        {
+            Volatile.Write(ref translationThread, Environment.CurrentManagedThreadId);
+            release.Wait(TimeSpan.FromSeconds(30));
+            return [];
+        });
+        var programs = new ShaderProgramCache(guest.Context, guest.Compiler, guest.Host) { DeferLinking = true };
+        var source = guest.Source(CodeAddress, ShaderStage.Compute, PipelineTestGuest.BufferDescriptor(TableAddress, 16, 1, 0));
+        bool TryGet(out ShaderStageResources stage, out string rejection)
+        {
+            var cursor = 0u;
+            return programs.TryGetProgram(source, PipelineTestGuest.ComputeOptions(32), strictShaders: true, ref cursor, out _,
+                out stage, out rejection);
+        }
+
+        var deadline = DateTime.UtcNow.AddSeconds(30);
+        while (Volatile.Read(ref translationThread) < 0 && DateTime.UtcNow < deadline)
+        {
+            Assert.False(TryGet(out _, out var waiting));
+            Assert.Empty(waiting);
+            Thread.Sleep(1);
+        }
+
+        Assert.NotEqual(-1, Volatile.Read(ref translationThread));
+        Assert.NotEqual(testThread, Volatile.Read(ref translationThread));
+        Assert.False(TryGet(out _, out var translating));
+        Assert.Empty(translating);
+        release.Set();
+        bool ready;
+        ShaderStageResources stage;
+        string rejection;
+        do
+        {
+            ready = TryGet(out stage, out rejection);
+            if (!ready) Thread.Sleep(1);
+        } while (!ready && rejection.Length == 0 && DateTime.UtcNow < deadline);
+        Assert.True(ready, rejection);
+        Assert.Equal([0x3000ul], stage.CallArguments!);
+        Assert.Single(guest.Compiler.Requests);
+    }
+
+    // A game's tables and functions can lie under an image the GPU wrote before the memory was reused, which refuses
+    // clean reads of the game's own bytes: the library reads them as it reads any shader code.
+    [Fact]
+    public void LinkedLibrary_ReadsTablesAndCodeThatCleanReadsRefuse()
+    {
+        using var fatal = new FatalScope();
+        var guest = CreateGuest();
+        guest.Host.RefuseCleanRead = address =>
+            address is >= TableAddress and < TableAddress + 16 or >= FunctionAddress and < FunctionAddress + 8;
+        var source = guest.Source(CodeAddress, ShaderStage.Compute, PipelineTestGuest.BufferDescriptor(TableAddress, 16, 1, 0));
+        Compile(guest, source, out var stage);
+        var request = Assert.Single(guest.Compiler.Requests);
+        Assert.DoesNotContain(request.Program.Instructions, instruction => instruction.Opcode == "SSwappcB64");
+        Assert.Equal([FunctionAddress], stage.CallTargets!);
     }
 
     [Theory]
@@ -77,9 +177,9 @@ public sealed class LinkedShaderProgramCacheTests
         Assert.Equal(0u, cursor);
     }
 
-    private static PipelineTestGuest CreateGuest()
+    private static PipelineTestGuest CreateGuest(Func<ShaderCompileRequest, byte[]>? compile = null)
     {
-        var guest = new PipelineTestGuest();
+        var guest = new PipelineTestGuest(compile);
         RegisterCaller(guest, CodeAddress, HeaderAddress);
         guest.WriteWords(FunctionAddress, 0xBF800000, 0xBE80200E);
         WriteRecord(guest, 0x3000);
@@ -93,9 +193,11 @@ public sealed class LinkedShaderProgramCacheTests
     private static void WriteRecord(PipelineTestGuest guest, uint argument) =>
         guest.WriteWords(TableAddress, unchecked((uint)FunctionAddress), (uint)(FunctionAddress >> 32), argument, 0);
 
-    private static ShaderProgram Compile(PipelineTestGuest guest, ShaderSource source)
+    private static ShaderProgram Compile(PipelineTestGuest guest, ShaderSource source) => Compile(guest, source, out _);
+
+    private static ShaderProgram Compile(PipelineTestGuest guest, ShaderSource source, out ShaderStageResources stage)
     {
         var cursor = 0u;
-        return guest.Programs.GetOrCompile(source, PipelineTestGuest.ComputeOptions(32), ref cursor, out _);
+        return guest.Programs.GetOrCompile(source, PipelineTestGuest.ComputeOptions(32), ref cursor, out stage);
     }
 }

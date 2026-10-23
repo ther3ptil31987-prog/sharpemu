@@ -102,6 +102,17 @@ public static class GuestGpuMemoryHook
     public static bool NoteProtected(ulong address, ulong size, GuestPageProtection protection) =>
         _current != null && IsWithinGpuAddressSpace(address, size) && _current.NoteProtected(address, size, protection);
 
+    // A thread runs on the range as its stack until the owner releases it (CpuStackRanges).
+    public static void NoteStack(ulong owner, ulong address, ulong size)
+    {
+        if (_current != null && IsWithinGpuAddressSpace(address, size))
+        {
+            _current.NoteStack(owner, address, size);
+        }
+    }
+
+    public static void NoteStackReleased(ulong owner) => _current?.NoteStackReleased(owner);
+
     public static bool OverlapsRegistered(ulong address, ulong size) =>
         _current != null && IsWithinGpuAddressSpace(address, size) && _current.OverlapsRegistered(address, size);
 

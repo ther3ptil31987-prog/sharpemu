@@ -261,6 +261,58 @@ public sealed class GuestGpuMemory : IDisposable
         return true;
     }
 
+    // A thread runs on the range as its stack: its pages keep the guest's own access (CpuStackRanges).
+    public void NoteStack(ulong owner, ulong address, ulong size)
+    {
+        var start = address & ~(TrackerLayout.PageBytes - 1);
+        var end = (address + size + TrackerLayout.PageBytes - 1) & ~(TrackerLayout.PageBytes - 1);
+        if (!_pages.Stacks.Set(owner, start, end, out var previous))
+        {
+            return;
+        }
+
+        if (previous is { } released)
+        {
+            ReleaseStack(released);
+        }
+
+        ReapplyAccess(start, end - start);
+    }
+
+    public void NoteStackReleased(ulong owner)
+    {
+        if (_pages.Stacks.Remove(owner, out var range))
+        {
+            ReleaseStack(range);
+        }
+    }
+
+    // No watch saw the CPU writes to a stack, so its range is marked written once it stops being one.
+    private void ReleaseStack((ulong Start, ulong End) range)
+    {
+        _ = MarkCpuWrite(range.Start, range.End - range.Start);
+        ReapplyAccess(range.Start, range.End - range.Start);
+    }
+
+    // Every page of the range's registered spans gets its derived protection again.
+    private void ReapplyAccess(ulong address, ulong size)
+    {
+        var end = address + size;
+        for (var cursor = address; cursor < end;)
+        {
+            if (TryGetSpan(cursor, out _, out var spanEnd))
+            {
+                var partEnd = Math.Min(spanEnd, end);
+                _pages.Reapply(cursor, partEnd - cursor);
+                cursor = partEnd;
+            }
+            else
+            {
+                cursor = (cursor & ~(TrackerLayout.PageBytes - 1)) + TrackerLayout.PageBytes;
+            }
+        }
+    }
+
     public void Unregister(ulong address, ulong size)
     {
         GuestGpuMemoryHook.Trace(address, size, "unmap-request");

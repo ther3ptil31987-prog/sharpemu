@@ -56,6 +56,8 @@ public sealed partial class ScalarValueGraph
             writer.Write(sources.Length);
             foreach (var source in sources) Reference(source);
         }
+        writer.Write(CallRecordArguments.Count);
+        foreach (var (pc, (low, high)) in CallRecordArguments) { writer.Write(pc); Reference(low); Reference(high); }
         writer.Write(_undefinedOrigins.Count);
         foreach (var (value, origin) in _undefinedOrigins)
         {
@@ -140,6 +142,9 @@ public sealed partial class ScalarValueGraph
             for (var source = 0; source < sources.Length; source++) sources[source] = Required();
             graph.UnsignedMedianSources.Add(instructionPc, sources);
         }
+        var callRecordArguments = Count();
+        for (var index = 0; index < callRecordArguments; index++)
+            graph.CallRecordArguments.Add(reader.ReadUInt32(), (Required(), Required()));
         var origins = Count(count);
         for (var i = 0; i < origins; i++) graph._undefinedOrigins.Add(Required(), (reader.ReadUInt32(), reader.ReadString()));
         var bitScans = Count(count);

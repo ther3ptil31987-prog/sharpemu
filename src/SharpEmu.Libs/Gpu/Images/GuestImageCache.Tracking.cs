@@ -69,6 +69,7 @@ public sealed partial class GuestImageCache
         _totalUsedMemory -= accounted;
         image.Registered = false;
         InvalidateLookups();
+        image.HeapChanged?.Invoke(image);
     }
 
     // Removes the image and its stencil associations; the slot is freed after the current tick.

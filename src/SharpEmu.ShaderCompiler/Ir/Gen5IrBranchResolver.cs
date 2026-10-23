@@ -42,6 +42,16 @@ public sealed class Gen5IrBranchResolver : IIrBranchResolver
             targetPc = call.TargetPc;
             return true;
         }
+        if (instruction.Control is ShaderCallGroupControl group)
+        {
+            targetPc = group.TargetPc;
+            return true;
+        }
+        if (instruction.Control is ShaderCallFaultControl { ReturnPc: { } returnPc })
+        {
+            targetPc = returnPc;
+            return true;
+        }
         if (IsTerminator(instruction))
         {
             return false;

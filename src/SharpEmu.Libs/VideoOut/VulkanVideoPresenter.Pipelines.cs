@@ -44,6 +44,7 @@ internal static unsafe partial class VulkanVideoPresenter
             public DescriptorSetLayout SetLayout;
             public DescriptorSetDemand Demand;
             public bool UsesPushDescriptors;
+            public bool UsesBindlessHeap;
             public GraphicsPipelineDescription? Description;
             public Pipeline StripVariant;
             public Pipeline ListVariant;
@@ -208,6 +209,11 @@ internal static unsafe partial class VulkanVideoPresenter
                 throw new SubmissionScheduler.AbandonedWorkException($"The resolution reads memory a pending publication writes: address=0x{address:X16}.");
             CompleteOverlappingPublications(address, size);
         }
+
+        public string DescribeCleanRead(ulong address) =>
+            $"readable={_guestMemory.CanRead(address, sizeof(uint))} gpu_dirty_bytes={_bufferCache.HasGpuDirtyBytes(address, sizeof(uint))} " +
+            $"gpu_dirty_pages={_bufferCache.HasGpuDirtyPages(address, sizeof(uint))} image_modified={_imageCache.HasGpuModifiedImageBytes(address, sizeof(uint))} " +
+            $"pending_publication={HasPendingMemoryPublication(address, sizeof(uint))} buffer={_bufferCache.IsRegionRegistered(address, sizeof(uint))}";
 
         // Refused while a GPU buffer or image write may still own the range.
         public bool TryReadCleanGuestWord(ulong address, out uint word)
@@ -582,6 +588,8 @@ internal static unsafe partial class VulkanVideoPresenter
                 program.Bindings ?? throw SubmissionScheduler.Fatal($"The program has no binding layout: hash=0x{program.Hash:X16}."),
                 stage);
 
+        private static bool UsesBindlessHeap(ShaderProgramInfo program) => program.Bindings?.UsesBindlessHeap == true;
+
         private static void CollectLayoutBindings(List<DescriptorSetLayoutBinding> bindings, BindingLayout layout, ShaderStage stage)
         {
             foreach (var binding in layout.Descriptors)
@@ -626,14 +634,18 @@ internal static unsafe partial class VulkanVideoPresenter
             }
         }
 
-        private PipelineLayout CreatePipelineLayout(DescriptorSetLayout setLayout, ShaderStageFlags pushStages)
+        // A program that reads call records also binds descriptor set 1 (BindlessHeap).
+        private PipelineLayout CreatePipelineLayout(DescriptorSetLayout setLayout, ShaderStageFlags pushStages, bool bindlessHeap = false)
         {
             var pushConstants = new PushConstantRange { StageFlags = pushStages, Offset = 0, Size = PushConstantBytes };
+            var setLayouts = stackalloc DescriptorSetLayout[2];
+            setLayouts[0] = setLayout;
+            setLayouts[1] = bindlessHeap ? RequireHeapSetLayout() : default;
             var create = new PipelineLayoutCreateInfo
             {
                 SType = StructureType.PipelineLayoutCreateInfo,
-                SetLayoutCount = 1,
-                PSetLayouts = &setLayout,
+                SetLayoutCount = bindlessHeap ? 2u : 1u,
+                PSetLayouts = setLayouts,
                 PushConstantRangeCount = 1,
                 PPushConstantRanges = &pushConstants,
             };
@@ -679,6 +691,8 @@ internal static unsafe partial class VulkanVideoPresenter
             }
 
             var setLayout = CreateDescriptorSetLayout(bindings, out var usesPushDescriptors, out var demand);
+            var bindlessHeap = UsesBindlessHeap(description.VertexStage) ||
+                (description.PixelStage is { } heapPixelStage && UsesBindlessHeap(heapPixelStage));
             var entry = new RenderPipelineEntry
             {
                 SetLayout = setLayout,
@@ -686,8 +700,9 @@ internal static unsafe partial class VulkanVideoPresenter
                 Layout = CreatePipelineLayout(setLayout,
                     (description.VertexStage.Stage == ShaderStageKind.Mesh
                         ? ShaderStageFlags.MeshBitExt : ShaderStageFlags.VertexBit) |
-                    ShaderStageFlags.FragmentBit),
+                    ShaderStageFlags.FragmentBit, bindlessHeap),
                 UsesPushDescriptors = usesPushDescriptors,
+                UsesBindlessHeap = bindlessHeap,
                 Description = description,
                 ProfileVertexHash = description.VertexStage.Hash,
                 ProfilePixelHash = description.PixelStage?.Hash ?? 0,
@@ -1104,7 +1119,8 @@ internal static unsafe partial class VulkanVideoPresenter
             var bindings = new List<DescriptorSetLayoutBinding>();
             CollectLayoutBindings(bindings, description.Stage, ShaderStage.Compute);
             var setLayout = CreateDescriptorSetLayout(bindings, out var usesPushDescriptors, out var demand);
-            var layout = CreatePipelineLayout(setLayout, ShaderStageFlags.ComputeBit);
+            var bindlessHeap = UsesBindlessHeap(description.Stage);
+            var layout = CreatePipelineLayout(setLayout, ShaderStageFlags.ComputeBit, bindlessHeap);
             var computeModule = new ShaderModule(description.Program.Module);
             if (computeModule.Handle == 0)
             {
@@ -1170,6 +1186,7 @@ internal static unsafe partial class VulkanVideoPresenter
                 SetLayout = setLayout,
                 Demand = demand,
                 UsesPushDescriptors = usesPushDescriptors,
+                UsesBindlessHeap = bindlessHeap,
                 ProfileComputeHash = description.Stage.Hash,
             };
             return RegisterPipeline(entry);
@@ -1185,15 +1202,22 @@ internal static unsafe partial class VulkanVideoPresenter
             public required PipelineLayout Layout;
             public required DescriptorSetDemand Demand;
             public required bool UsesPushDescriptors;
+            public required bool UsesBindlessHeap;
             public required ulong Hash;
             public required int SpirvBytes;
             public Task<Pipeline> Compile = Task.FromResult(default(Pipeline));
             public long StartTimestamp;
             public long CompileMilliseconds;
             public long CompletedTimestamp;
+
+            // A linked program's own pipeline cache (CreateLinkedPipelineCache), written once its pipeline is registered.
+            public DriverCacheShard? LinkedCache;
         }
 
         private readonly Dictionary<ulong, PendingComputePipeline> _pendingComputePipelines = new();
+
+        // The compile in flight for each linked guest program (Bindings.CallTargetCount != 0), by program hash.
+        private readonly Dictionary<ulong, Task> _linkedComputeCompiles = new();
 
         public Task? GetComputePipelineCompletion(ShaderProgram program) =>
             _pendingComputePipelines.TryGetValue(program.Id, out var pending) ? pending.Compile : null;
@@ -1244,16 +1268,30 @@ internal static unsafe partial class VulkanVideoPresenter
                     SetLayout = pending.SetLayout,
                     Demand = pending.Demand,
                     UsesPushDescriptors = pending.UsesPushDescriptors,
+                    UsesBindlessHeap = pending.UsesBindlessHeap,
                     ProfileComputeHash = pending.Hash,
                 }, () => _pendingComputePipelines.Remove(key));
+                ReleaseLinkedPipelineCache(pending.LinkedCache, pending.Hash, save: true);
+
                 return true;
+            }
+
+            // A linked program's module can keep the driver busy for minutes, and a game that streams callees relinks
+            // the program before an earlier module is done. Each linked program compiles one module at a time, so the
+            // modules of tables the game has already replaced cannot take every compiler slot from the programs its
+            // queues wait for.
+            var linked = description.Stage.Bindings is { CallTargetCount: not 0 };
+            if (linked && _linkedComputeCompiles.TryGetValue(description.Stage.Hash, out var running) && !running.IsCompleted)
+            {
+                return false;
             }
 
             using var profileScope = RenderPhaseProfile.MeasureDetail(RenderPhaseProfile.Phase.PipelineSetup);
             var bindings = new List<DescriptorSetLayoutBinding>();
             CollectLayoutBindings(bindings, description.Stage, ShaderStage.Compute);
             var setLayout = CreateDescriptorSetLayout(bindings, out var usesPushDescriptors, out var demand);
-            var layout = CreatePipelineLayout(setLayout, ShaderStageFlags.ComputeBit);
+            var bindlessHeap = UsesBindlessHeap(description.Stage);
+            var layout = CreatePipelineLayout(setLayout, ShaderStageFlags.ComputeBit, bindlessHeap);
             var computeModule = new ShaderModule(description.Program.Module);
             if (computeModule.Handle == 0)
             {
@@ -1261,7 +1299,8 @@ internal static unsafe partial class VulkanVideoPresenter
             }
 
             var device = _device;
-            var cacheSource = GetGuestPipelineCacheSource(ComputeCacheKey(description.Stage.Hash, computeModule.Handle));
+            var linkedCache = linked ? CreateLinkedPipelineCache(description.Stage.Hash) : null;
+            var cacheSource = linkedCache?.Cache ?? GetGuestPipelineCacheSource(ComputeCacheKey(description.Stage.Hash, computeModule.Handle));
             var vk = _vk;
             var requiredSubgroupSize = ComputeRequiredSubgroupSize(description.Input);
             var started = new PendingComputePipeline
@@ -1270,9 +1309,11 @@ internal static unsafe partial class VulkanVideoPresenter
                 Layout = layout,
                 Demand = demand,
                 UsesPushDescriptors = usesPushDescriptors,
+                UsesBindlessHeap = bindlessHeap,
                 Hash = description.Stage.Hash,
                 SpirvBytes = SpirvBytesOf(computeModule.Handle),
                 StartTimestamp = Stopwatch.GetTimestamp(),
+                LinkedCache = linkedCache,
             };
             started.Compile = Task.Factory.StartNew(
                 () =>
@@ -1310,6 +1351,11 @@ internal static unsafe partial class VulkanVideoPresenter
                 TaskCreationOptions.LongRunning,
                 TaskScheduler.Default);
             _pendingComputePipelines.Add(key, started);
+            if (linked)
+            {
+                _linkedComputeCompiles[description.Stage.Hash] = started.Compile;
+            }
+
             return false;
         }
 
@@ -1372,10 +1418,12 @@ internal static unsafe partial class VulkanVideoPresenter
                 {
                     Console.Error.WriteLine($"[LOADER][WARN] Pending compute pipeline failed during shutdown: {exception.Message}");
                 }
+                ReleaseLinkedPipelineCache(pending.LinkedCache, pending.Hash, save: false);
                 _vk.DestroyPipelineLayout(_device, pending.Layout, null);
                 _vk.DestroyDescriptorSetLayout(_device, pending.SetLayout, null);
             }
             _pendingComputePipelines.Clear();
+            _linkedComputeCompiles.Clear();
         }
 
         private void DestroyRenderPipelines()

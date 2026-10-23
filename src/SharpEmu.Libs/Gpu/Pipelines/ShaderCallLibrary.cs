@@ -9,16 +9,57 @@ using SharpEmu.ShaderCompiler.Resources;
 
 namespace SharpEmu.Libs.Gpu.Pipelines;
 
-internal sealed record ShaderCallLibrary(string Identity, IReadOnlyList<ShaderCallSite> Calls)
+// A callee a runtime-record caller's site has named: its target, the hash of its code, and the words its decode read
+// (ShaderFunctionReadResult.Runs), from which a later session decodes it again (ShaderCallUnionStore).
+internal sealed record UnitedCallee(ShaderCallTarget Target, byte[] Code, (ulong Address, byte[] Bytes)[] Runs);
+
+// Identity names the tables and code exactly. LayoutIdentity names them up to the values of the records' arguments: it
+// keeps which records share an argument and which have none. A game rebuilds its tables with the argument data
+// elsewhere as often as every frame; such a table links to the same program, whose plan and module read Arguments (the
+// distinct nonzero record arguments, Gen5ShaderCallLinker.CallEntryArguments) from each dispatch.
+internal sealed record ShaderCallLibrary(string Identity, IReadOnlyList<ShaderCallSite> Calls, string LayoutIdentity,
+    ulong[] Arguments)
 {
     private const ulong MaxTableBytes = 65536;
 
+    // With runtimeArguments a site links each callee once, so a table's size sets only how many records the host reads and
+    // resolves at each dispatch.
+    private const ulong MaxRuntimeTableBytes = 1 << 20;
+
+    // Read with runtimeArguments, a site's Calls hold each callee once (in the order of their code, so the program does not
+    // depend on the tables' order), LayoutIdentity names only the sites and the callees' code, and Records holds every
+    // record of the tables for the host to resolve at each dispatch (CallRecordSelector).
+    public (ulong Target, ulong Argument)[] Records { get; init; } = [];
+
+    // The distinct callee code bodies of the tables (by content), when read with runtimeArguments.
+    public int Bodies { get; init; }
+
+    // Each callee's code hash, by address, when read with runtimeArguments.
+    public Dictionary<ulong, byte[]> CodeHashes { get; init; } = [];
+
+    // The words each callee's decode read, by address, when read with runtimeArguments.
+    public Dictionary<ulong, (ulong Address, byte[] Bytes)[]> CodeRuns { get; init; } = [];
+
+    // The hash of the code at each address the tables name, as this dispatch read it; CodeHashes holds the code the library
+    // links, which for a kept or united callee can be older.
+    public Dictionary<ulong, byte[]> CurrentCodeHashes { get; init; } = [];
+
+    // The sites whose tables name each address at this dispatch.
+    public Dictionary<ulong, HashSet<uint>> CurrentSites { get; init; } = [];
+
+    // The host reads the tables and the functions they name as it reads any shader code and resource table, so bytes
+    // the GPU wrote are brought back and an image the GPU wrote over memory the game has since reused does not refuse
+    // the game's own bytes.
     public static ShaderCallLibrary Read(Gen5ShaderProgram caller, MemoryAccessTable memory,
-        ResourceSnapshot snapshot, GuestWordReader read)
+        ResourceSnapshot snapshot, GuestWordReader read, ShaderFunctionCache? functionCache = null, bool runtimeArguments = false)
     {
         using var identity = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        using var layout = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         var calls = new List<ShaderCallSite>();
         var functions = new Dictionary<ulong, Gen5ShaderProgram>();
+        var codeHashes = new Dictionary<ulong, byte[]>();
+        var codeRuns = new Dictionary<ulong, (ulong Address, byte[] Bytes)[]>();
+        var currentSites = new Dictionary<ulong, HashSet<uint>>();
         foreach (var (call, index) in caller.Instructions.Select((instruction, index) => (instruction, index)))
         {
             if (call.Opcode != "SSwappcB64") continue;
@@ -76,18 +117,22 @@ internal sealed record ShaderCallLibrary(string Identity, IReadOnlyList<ShaderCa
             var stride = (descriptor[1] >> 16) & 0x3FFF;
             var size = (ulong)descriptor[2] * Math.Max(stride, 1u);
             var returnAddress = unchecked(caller.Address + call.ProgramOffset + (ulong)call.Words.Count * sizeof(uint));
+            layout.AppendData(BitConverter.GetBytes(call.Pc));
+            layout.AppendData(BitConverter.GetBytes(argumentRegister));
             if (size == 0)
             {
                 // A buffer without records reads zero for every load: a null target, so the call has no target.
                 calls.Add(new(call.Pc, call.Sources[0].Value, argumentRegister, call.Destinations[0].Value, returnAddress, []));
                 continue;
             }
-            if (size > MaxTableBytes || (size & 15) != 0 || (descriptor[1] & 0x80000000) != 0)
+            if (size > (runtimeArguments ? MaxRuntimeTableBytes : MaxTableBytes) || (size & 15) != 0 || (descriptor[1] & 0x80000000) != 0)
                 throw new InvalidOperationException(
                     $"The shader call table extent or layout is not supported: address=0x{address:X} stride={stride} records={descriptor[2]} " +
                     $"swizzle={descriptor[1] >> 31} dynamic={loadControl.DynamicOffsetRegister.HasValue} offset={loadControl.ImmediateOffsetBytes}.");
             var table = ShaderCallDump.ReadPrefix(address, (int)size, read);
-            if ((ulong)table.Length != size) throw new InvalidOperationException("The shader call table is not CPU-readable at this submission.");
+            if ((ulong)table.Length != size)
+                throw new InvalidOperationException(
+                    $"The shader call table is not CPU-readable at this submission: address=0x{address:X} bytes={size} readable={table.Length}.");
             identity.AppendData(table);
             var targets = new List<ShaderCallTarget>();
             var records = new HashSet<(ulong, ulong)>();
@@ -102,18 +147,252 @@ internal sealed record ShaderCallLibrary(string Identity, IReadOnlyList<ShaderCa
                 if (target == 0 || !records.Add((target, argument))) continue;
                 if (!functions.TryGetValue(target, out var function))
                 {
-                    var result = ShaderFunctionReader.Read(target, read);
+                    var result = functionCache?.Read(target, read) ?? ShaderFunctionReader.Read(target, read);
                     if (!result.Complete) throw new ShaderFunctionReadException(target, result);
                     function = result.Program;
                     identity.AppendData(result.Bytes);
+                    layout.AppendData(result.Bytes);
                     functions.Add(target, function);
+                    if (runtimeArguments)
+                    {
+                        codeHashes.Add(target, SHA256.HashData(result.Bytes));
+                        codeRuns.Add(target, result.Runs);
+                    }
                 }
                 targets.Add(new(target, argument, function));
+                if (runtimeArguments)
+                {
+                    if (!currentSites.TryGetValue(target, out var namedAt))
+                    {
+                        currentSites.Add(target, namedAt = []);
+                    }
+
+                    namedAt.Add(call.Pc);
+                }
+                layout.AppendData(BitConverter.GetBytes(target));
             }
+            layout.AppendData(BitConverter.GetBytes(targets.Count));
             calls.Add(new(call.Pc, call.Sources[0].Value, argumentRegister, call.Destinations[0].Value, returnAddress, targets));
         }
         identity.AppendData(BitConverter.GetBytes(caller.Address));
-        return new(Convert.ToHexString(identity.GetHashAndReset()), calls);
+        if (runtimeArguments)
+            return WithRuntimeArguments(caller, Convert.ToHexString(identity.GetHashAndReset()), calls, codeHashes, codeRuns) with
+            {
+                CurrentSites = currentSites,
+            };
+        layout.AppendData(BitConverter.GetBytes(caller.Address));
+        ulong[] recordArguments = [.. calls.SelectMany(site => site.Targets).Select(target => target.Argument)];
+        ulong[] arguments = [.. recordArguments.Where(argument => argument != 0).Distinct()];
+        var slotOf = arguments.Select((argument, slot) => (argument, slot)).ToDictionary(entry => entry.argument, entry => entry.slot);
+        foreach (var argument in recordArguments)
+            layout.AppendData(BitConverter.GetBytes(argument == 0 ? -1 : slotOf[argument]));
+        return new(Convert.ToHexString(identity.GetHashAndReset()), calls, Convert.ToHexString(layout.GetHashAndReset()), arguments);
+    }
+
+    private static ShaderCallLibrary WithRuntimeArguments(Gen5ShaderProgram caller, string identity, List<ShaderCallSite> calls,
+        Dictionary<ulong, byte[]> codeHashes, Dictionary<ulong, (ulong Address, byte[] Bytes)[]> codeRuns)
+    {
+        var sites = new List<ShaderCallSite>(calls.Count);
+        var records = new HashSet<(ulong Target, ulong Argument)>();
+        foreach (var site in calls)
+        {
+            foreach (var target in site.Targets) records.Add((target.Address, target.Argument));
+            sites.Add(site with
+            {
+                Targets = [.. site.Targets.DistinctBy(static target => target.Address).Select(static target => target with { Argument = 0 })],
+            });
+        }
+
+        return WithRuntimeSites(caller.Address, identity, sites, [.. records], codeHashes, codeRuns) with { CurrentCodeHashes = codeHashes };
+    }
+
+    // The library of sites whose callees are each named once, in the order of their code, and whose identity names only the
+    // sites, that code and which callees share an address (a callee slot): the module reads the addresses from each dispatch,
+    // so a library whose functions the game loaded elsewhere links to the same program.
+    private static ShaderCallLibrary WithRuntimeSites(ulong callerAddress, string identity, IReadOnlyList<ShaderCallSite> calls,
+        (ulong Target, ulong Argument)[] records, Dictionary<ulong, byte[]> codeHashes,
+        Dictionary<ulong, (ulong Address, byte[] Bytes)[]> codeRuns)
+    {
+        using var layout = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        layout.AppendData("runtime-call-records-slots"u8);
+        var sites = new List<ShaderCallSite>(calls.Count);
+        var slots = new Dictionary<ulong, int>();
+        foreach (var site in calls)
+        {
+            List<ShaderCallTarget> callees = [.. site.Targets
+                .OrderBy(target => BinaryPrimitives.ReadUInt64LittleEndian(codeHashes[target.Address]))
+                .ThenBy(static target => target.Address)];
+            layout.AppendData(BitConverter.GetBytes(site.Pc));
+            layout.AppendData(BitConverter.GetBytes(site.ArgumentRegister));
+            layout.AppendData(BitConverter.GetBytes(callees.Count));
+            foreach (var callee in callees)
+            {
+                if (!slots.TryGetValue(callee.Address, out var slot))
+                {
+                    slots.Add(callee.Address, slot = slots.Count);
+                }
+
+                layout.AppendData(BitConverter.GetBytes(slot));
+                layout.AppendData(codeHashes[callee.Address]);
+            }
+
+            sites.Add(site with { Targets = callees });
+        }
+
+        layout.AppendData(BitConverter.GetBytes(callerAddress));
+        return new(identity, sites, Convert.ToHexString(layout.GetHashAndReset()), [])
+        {
+            Records = records,
+            CodeHashes = codeHashes,
+            CodeRuns = codeRuns,
+            Bodies = sites.SelectMany(static site => site.Targets).Select(target => Convert.ToHexString(codeHashes[target.Address]))
+                .Distinct().Count(),
+        };
+    }
+
+    // This runtime-argument library whose sites hold the given callees, by site pc; a site the map does not name holds none.
+    public ShaderCallLibrary WithSiteCallees(ulong callerAddress, IReadOnlyDictionary<uint, Dictionary<ulong, UnitedCallee>> callees)
+    {
+        var codeHashes = new Dictionary<ulong, byte[]>(CodeHashes);
+        var codeRuns = new Dictionary<ulong, (ulong Address, byte[] Bytes)[]>(CodeRuns);
+        var sites = new List<ShaderCallSite>(Calls.Count);
+        foreach (var site in Calls)
+        {
+            List<ShaderCallTarget> targets = [];
+            if (callees.TryGetValue(site.Pc, out var named))
+            {
+                foreach (var (address, callee) in named)
+                {
+                    codeHashes[address] = callee.Code;
+                    codeRuns[address] = callee.Runs;
+                    targets.Add(callee.Target);
+                }
+            }
+
+            sites.Add(site with { Targets = targets });
+        }
+
+        return WithRuntimeSites(callerAddress, Identity, sites, Records, codeHashes, codeRuns) with
+        {
+            CurrentCodeHashes = CurrentCodeHashes,
+            CurrentSites = CurrentSites,
+        };
+    }
+
+    // This runtime-argument library without a callee at any site: its program returns from every call at once, as from a
+    // record of a callee it does not hold, and compiles in seconds where the callees' code can take the driver minutes.
+    public ShaderCallLibrary WithoutCallees(ulong callerAddress) =>
+        WithSiteCallees(callerAddress, new Dictionary<uint, Dictionary<ulong, UnitedCallee>>());
+
+    // Each site's callees with the code they were decoded from (ShaderCallUnionStore).
+    public Dictionary<uint, UnitedCallee[]> SiteCallees() => Calls.ToDictionary(static site => site.Pc, site =>
+        site.Targets.Select(target => new UnitedCallee(target, CodeHashes[target.Address], CodeRuns[target.Address])).ToArray());
+
+    // This runtime-argument library with each site's callees joined to the ones it named before (union, by site pc and
+    // address, which this updates): a callee that leaves the tables keeps its copy, so tables that drop and regain it link
+    // to the same program. An address whose code changed takes the new code, and a site that would pass maxCallees starts
+    // over from its current callees.
+    public ShaderCallLibrary Unite(ulong callerAddress, Dictionary<uint, Dictionary<ulong, UnitedCallee>> union, int maxCallees)
+    {
+        // Callees whose code is the same share one decoded program, so the module can share their function: the translator
+        // compares instructions whose controls hold register lists by reference (SameBody).
+        var programs = new Dictionary<string, Gen5ShaderProgram>();
+        foreach (var known in union.Values.SelectMany(static callees => callees.Values))
+        {
+            programs.TryAdd(Convert.ToHexString(known.Code), known.Target.Program);
+        }
+
+        UnitedCallee Current(ShaderCallTarget target)
+        {
+            var code = CodeHashes[target.Address];
+            var program = programs.TryGetValue(Convert.ToHexString(code), out var shared) ? shared : target.Program;
+            programs.TryAdd(Convert.ToHexString(code), program);
+            return new UnitedCallee(target with { Program = program }, code, CodeRuns[target.Address]);
+        }
+
+        // An address the tables name links the code they name at every site, also at a site whose own table does not name it
+        // now: one address never links two bodies, whose records would share one callee slot.
+        var named = new Dictionary<ulong, ShaderCallTarget>();
+        foreach (var target in Calls.SelectMany(static site => site.Targets))
+        {
+            named.TryAdd(target.Address, target);
+        }
+
+        foreach (var callees in union.Values)
+        {
+            foreach (var (address, known) in callees.ToArray())
+            {
+                if (named.TryGetValue(address, out var target) && !known.Code.AsSpan().SequenceEqual(CodeHashes[address]))
+                {
+                    callees[address] = Current(target);
+                }
+            }
+        }
+
+        // A function the game loaded at another address (in another session, or a block streamed in elsewhere) keeps its copy:
+        // an entry whose address the tables no longer name takes the address they name with the same code, at every site, so
+        // the program and its pipeline stay the same.
+        var moved = new Dictionary<ulong, ulong>();
+        foreach (var site in Calls)
+        {
+            if (!union.TryGetValue(site.Pc, out var callees))
+            {
+                continue;
+            }
+
+            foreach (var target in site.Targets)
+            {
+                if (callees.ContainsKey(target.Address) || moved.ContainsValue(target.Address))
+                {
+                    continue;
+                }
+
+                var code = CodeHashes[target.Address];
+                foreach (var (address, known) in callees)
+                {
+                    if (!named.ContainsKey(address) && !moved.ContainsKey(address) && known.Code.AsSpan().SequenceEqual(code))
+                    {
+                        moved.Add(address, target.Address);
+                        break;
+                    }
+                }
+            }
+        }
+
+        foreach (var callees in union.Values)
+        {
+            foreach (var (from, to) in moved)
+            {
+                if (callees.Remove(from) && !callees.ContainsKey(to))
+                {
+                    callees[to] = Current(named[to]);
+                }
+            }
+        }
+
+        foreach (var site in Calls)
+        {
+            if (!union.TryGetValue(site.Pc, out var callees))
+            {
+                callees = [];
+                union.Add(site.Pc, callees);
+            }
+
+            if (site.Targets.Count(target => !callees.ContainsKey(target.Address)) + callees.Count > maxCallees)
+            {
+                callees.Clear();
+            }
+
+            foreach (var target in site.Targets)
+            {
+                if (!callees.ContainsKey(target.Address))
+                {
+                    callees[target.Address] = Current(target);
+                }
+            }
+        }
+
+        return WithSiteCallees(callerAddress, union);
     }
 
     // A caller may also load one 16-byte record straight into the call registers: the target pair with an

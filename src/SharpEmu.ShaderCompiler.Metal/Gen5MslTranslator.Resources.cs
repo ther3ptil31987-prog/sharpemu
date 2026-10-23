@@ -19,6 +19,12 @@ public static partial class Gen5MslTranslator
     public static bool TryCompileProgram(ShaderCompileRequest request, out Gen5MslShader shader, out string error)
     {
         shader = default!;
+        if (request.UsesBindlessHeap)
+        {
+            error = "Metal does not support bindless heap descriptors.";
+            return false;
+        }
+
         if (request.Stage == ShaderStage.Mesh)
         {
             error = "Metal does not support mesh shaders.";

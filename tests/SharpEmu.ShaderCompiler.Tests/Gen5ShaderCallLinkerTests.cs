@@ -49,7 +49,14 @@ public sealed class Gen5ShaderCallLinkerTests
         var graph = ScalarValueGraph.Build(linked, 0, 16);
         Assert.True(graph.Memory.TryGetIndex(matches[0].Pc + 8, 0, out var argumentIndex));
         Assert.True(graph.Memory.TryGetIndex(matches[0].Pc + 16, 0, out var returnIndex));
-        AssertPair(targets[0].Argument, graph.Accesses[argumentIndex]!.Handle!);
+        // The plan reads each record's argument from the user-data registers the dispatch fills with the tables' current
+        // arguments, so a table rebuilt elsewhere keeps the plan; the return address stays a constant.
+        Assert.Equal(targets.Select(target => target.Argument), Gen5ShaderCallLinker.CallEntryArguments(linked));
+        Assert.Equal(4u, graph.CallArgumentRegisters);
+        var argument = graph.Accesses[argumentIndex]!.Handle!;
+        Assert.All(argument.Operands, value => Assert.Equal(ScalarValueKind.UserData, value.Kind));
+        Assert.Equal([ScalarValueGraph.CallArgumentRegisterBase, ScalarValueGraph.CallArgumentRegisterBase + 1],
+            argument.Operands.Select(value => value.UserDataRegister));
         AssertPair(returnAddress, graph.Accesses[returnIndex]!.Handle!);
         Assert.Equal(2, linked.FunctionBufferAccesses.Count);
         Assert.All(linked.FunctionBufferAccesses, pc => Assert.Equal("SBufferLoadDword", linked.Instructions.Single(instruction => instruction.Pc == pc).Opcode));
@@ -72,13 +79,47 @@ public sealed class Gen5ShaderCallLinkerTests
     [Theory]
     [InlineData("SSwappcB64")]
     [InlineData("SCallB64")]
-    [InlineData("SGetpcB64")]
     [InlineData("SRfeB64")]
     [InlineData("SMovreldB32")]
     public void Link_RejectsUnsupportedFunctionControl(string opcode)
     {
         var body = Program(Sop1(0, opcode, 0, Gen5Operand.Scalar(0)), Sop1(4, "SSetpcB64", 0, Gen5Operand.Scalar(14)));
         Assert.Throws<InvalidOperationException>(() => Link(body));
+    }
+
+    // A function that reads its program address gets its own: the dispatch's shader base is the caller's address, and
+    // the copied S_GETPC_B64 keeps the function's distance from it, also for a function placed below the caller.
+    [Theory]
+    [InlineData(0x8000ul)]
+    [InlineData(0x20000ul)]
+    public void Link_KeepsTheFunctionAddressForProgramCounterReads(ulong function)
+    {
+        const ulong callerAddress = 0x10000;
+        var caller = Program(Sop1(0, "SSwappcB64", 14, Gen5Operand.Scalar(14)), EndProgram(4)) with { Address = callerAddress };
+        var body = Program(Nop(0), Sop1(4, "SGetpcB64", 0, Gen5Operand.Scalar(0)), Sop1(8, "SSetpcB64", 0, Gen5Operand.Scalar(14)));
+        var linked = Gen5ShaderCallLinker.Link(caller, [new(0, 14, 16, 14, callerAddress + 4, [new ShaderCallTarget(function, 0x3000, body)])]);
+        var read = Assert.Single(linked.Instructions, instruction => instruction.Opcode == "SGetpcB64");
+        Assert.Equal(function + 4, unchecked(callerAddress + read.ProgramOffset));
+        Assert.Equal(new ShaderFunctionPcControl(function, 4), read.Control);
+        Assert.True(BindingLayout.ReadsShaderBase(linked));
+    }
+
+    // The host pushes the callees in the order the module tests them: each once, by site and then by record.
+    [Fact]
+    public void CallTargets_FollowTheSitesAndRecords()
+    {
+        var caller = Program(Sop1(0, "SSwappcB64", 14, Gen5Operand.Scalar(14)), Sop1(4, "SSwappcB64", 14, Gen5Operand.Scalar(14)),
+            EndProgram(8));
+        var body = Program(Sop1(0, "SSetpcB64", 0, Gen5Operand.Scalar(14)));
+        ShaderCallSite[] calls =
+        [
+            new(4, 14, 16, 14, 8, [new(0x5000, 1, body), new(0x2000, 2, body)]),
+            new(0, 14, 16, 14, 4, [new(0x3000, 1, body), new(0x2000, 3, body), new(0x3000, 4, body)]),
+        ];
+        var linked = Gen5ShaderCallLinker.Link(caller, calls);
+        Assert.Equal([0x3000ul, 0x2000, 0x5000], Gen5ShaderCallLinker.CallTargets(linked));
+        Assert.Equal(Gen5ShaderCallLinker.CallTargets(linked), Gen5ShaderCallLinker.CallTargets(calls));
+        Assert.Equal(3u, BindingLayout.CountCallTargets(linked));
     }
 
     [Fact]

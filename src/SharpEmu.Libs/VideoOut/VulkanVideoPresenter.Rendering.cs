@@ -603,7 +603,9 @@ internal static unsafe partial class VulkanVideoPresenter
                 }
                 else
                 {
-                    binding.Layout = image.Description.IsDepth ? ImageLayout.DepthStencilReadOnlyOptimal : ImageLayout.ShaderReadOnlyOptimal;
+                    // Set 1 reads a heap image in the general layout; a draw that binds it too keeps that layout.
+                    binding.Layout = image.HeapChanged is not null ? ImageLayout.General
+                        : image.Description.IsDepth ? ImageLayout.DepthStencilReadOnlyOptimal : ImageLayout.ShaderReadOnlyOptimal;
                     image.Transition(binding.Layout, AccessFlags.ShaderReadBit, range, command);
                 }
             }

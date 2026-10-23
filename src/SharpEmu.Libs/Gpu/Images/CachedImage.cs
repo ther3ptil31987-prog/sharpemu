@@ -78,6 +78,9 @@ public sealed unsafe partial class CachedImage : IDisposable
     public readonly List<CachedImageView> Views = new();
     public ImageUses Uses;
     public ImageBindingState Binding;
+
+    // Set while descriptor set 1 holds a view of this image: told when its layout, contents or registration change.
+    public Action<CachedImage>? HeapChanged;
     public bool Registered;
     public uint QueryEpoch;
     public ulong WatchBegin;
@@ -359,6 +362,12 @@ public sealed unsafe partial class CachedImage : IDisposable
         {
             _maybeCpuDirty = true;
         }
+        else
+        {
+            return;
+        }
+
+        HeapChanged?.Invoke(this);
     }
 
     public bool IsCpuDirty => _cpuDirty || _maybeCpuDirty;
@@ -373,6 +382,8 @@ public sealed unsafe partial class CachedImage : IDisposable
         {
             _maybeCpuDirty = true;
         }
+
+        HeapChanged?.Invoke(this);
     }
 
     public bool NeedsMaybeCpuHash => _maybeCpuDirty && !_maybeHashValid;
@@ -451,6 +462,7 @@ public sealed unsafe partial class CachedImage : IDisposable
         _bufferHoldsGpuContents = false;
         GpuWriteSequence = Interlocked.Increment(ref _gpuWriteCounter);
         _guestPieceHashes = null;
+        HeapChanged?.Invoke(this);
     }
 
     public void ClearGpuModified() => _gpuModified = false;

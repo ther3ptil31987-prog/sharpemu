@@ -144,6 +144,8 @@ public sealed unsafe partial class CachedImage
             return;
         }
 
+        HeapChanged?.Invoke(this);
+
         // Attachment accesses inside one rendering scope are already ordered by rasterization
         // order, so a barrier that only repeats an attachment write in the same layout matters
         // only to what runs after the scope; it waits for the scope to end instead of ending it.

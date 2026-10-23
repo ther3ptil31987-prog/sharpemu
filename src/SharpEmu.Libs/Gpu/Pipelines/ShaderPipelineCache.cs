@@ -41,7 +41,12 @@ internal sealed partial class ShaderPipelineCache : IShaderPipelineProvider
         _context = context;
         _host = host;
         _registry = registry;
-        _programs = new ShaderProgramCache(context, compiler, host);
+        _programs = new ShaderProgramCache(context, compiler, host) { DeferLinking = true };
+        _programs.TryComputePipeline = (program, stage, input) =>
+        {
+            input.Stage = stage;
+            return TryCreateComputePipeline(input, program, out _);
+        };
     }
 
     public ShaderProgramCache Programs => _programs;
@@ -721,7 +726,7 @@ internal sealed partial class ShaderPipelineCache : IShaderPipelineProvider
         if (_programs.TryGetProgram(source, options, _strictShaders, ref pushDataCursor, out program, out stage, out var rejection))
             return true;
 
-        if (_reportedShaderSkips.Add((source.Stage, source.Hash, source.CodeSize)))
+        if (rejection.Length != 0 && _reportedShaderSkips.Add((source.Stage, source.Hash, source.CodeSize)))
         {
             var tag = source.Stage == ShaderStage.Compute ? "COMPUTE_SKIPPED" : "DRAW_SKIPPED";
             Console.Error.WriteLine($"[GPU][WARN][{tag}] {rejection} " +

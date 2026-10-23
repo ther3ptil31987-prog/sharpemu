@@ -241,6 +241,68 @@ public sealed class GlobalMemoryShaderTests(HeadlessVulkanFixture fixture, ITest
         Assert.Equal(expected, RunOnce(vulkan, shader, initial));
     }
 
+    // D16 format stores (MUBUF opcodes 132-135) hold two components in each register, the first in the low half: halves
+    // for the float and normalized formats, 16-bit integers for the integer ones. The descriptor format converts each
+    // component as a 32-bit format store would.
+    public static IEnumerable<object[]> D16DescriptorStoreCases()
+    {
+        // descriptor format, opcode, the two source registers, the bytes expected at MemoryOffset
+        yield return [Format8x4Unorm, 135u, Halves(1f, Half, 0f, -1f), Bytes(0xFF, 0x80, 0x00, 0x00)];
+        yield return [Format16Float, 132u, Halves(1f, 0f, 0f, 0f), Bytes(0x00, 0x3C)];
+        yield return [Format32Float, 132u, Halves(2f, 0f, 0f, 0f), Bytes(0x00, 0x00, 0x00, 0x40)];
+        yield return [Format8x2Unorm, 133u, Halves(1f, Half, 0f, 0f), Bytes(0xFF, 0x80)];
+        yield return [Format8x4Sint, 135u, new uint[] { 0x007F_FFFF, 0x00C8_FF80 }, Bytes(0xFF, 0x7F, 0x80, 0x7F)];
+    }
+
+    [Theory]
+    [MemberData(nameof(D16DescriptorStoreCases))]
+    public void D16FormattedBufferStores_UnpackTwoComponentsPerRegisterOnTheDevice(uint format, uint opcode, uint[] sources, byte[] expectedBytes)
+    {
+        var vulkan = fixture.Vulkan;
+        if (!GatePrerequisites.Ready(vulkan, shaderInt64: true)) return;
+
+        var initial = CreateInput();
+        for (var index = 0; index < sources.Length; index++)
+            WriteWord(initial, index * 4, sources[index]);
+        var expected = (byte[])initial.Clone();
+        initial.AsSpan(0, 64).CopyTo(expected.AsSpan(RegisterOutputOffset, 64));
+        expectedBytes.CopyTo(expected.AsSpan(MemoryOffset));
+
+        var shader = CompileTypedShader(format, (format << 12) | IdentitySwizzle, MemoryOffset, opcode, SourceRegister, typed: false);
+        Assert.Equal(expected, RunOnce(vulkan, shader, initial));
+    }
+
+    // D16 format loads (MUBUF opcodes 128-131) return halves for the float and normalized formats and 16-bit integers for
+    // the integer ones, two to a register with the first in the low half; an odd last component leaves the high half zero.
+    [Theory]
+    [InlineData(Format32x4Float, 131u, new uint[] { 0x3F80_0000, 0x3F00_0000, 0, 0x4000_0000 }, new uint[] { 0x3800_3C00, 0x4000_0000 })]
+    [InlineData(Format32x4Float, 130u, new uint[] { 0x3F80_0000, 0x3F00_0000, 0x4000_0000, 0 }, new uint[] { 0x3800_3C00, 0x0000_4000 })]
+    [InlineData(Format32x4Float, 128u, new uint[] { 0x3F80_0000, 0x3F00_0000, 0, 0 }, new uint[] { 0x0000_3C00 })]
+    [InlineData(Format8x4Uint, 131u, new uint[] { 0xFA03_0201 }, new uint[] { 0x0002_0001, 0x00FA_0003 })]
+    public void D16FormattedBufferLoads_PackTwoComponentsPerRegisterOnTheDevice(uint format, uint opcode, uint[] memoryWords, uint[] expectedRegisters)
+    {
+        var vulkan = fixture.Vulkan;
+        if (!GatePrerequisites.Ready(vulkan, shaderInt64: true)) return;
+
+        var initial = CreateInput();
+        for (var index = 0; index < memoryWords.Length; index++)
+            WriteWord(initial, MemoryOffset + index * 4, memoryWords[index]);
+        var expected = (byte[])initial.Clone();
+        initial.AsSpan(0, 64).CopyTo(expected.AsSpan(RegisterOutputOffset, 64));
+        for (var index = 0; index < expectedRegisters.Length; index++)
+            WriteWord(expected, RegisterOutputOffset + (int)(DestinationRegister - SourceRegister) * 4 + index * 4, expectedRegisters[index]);
+
+        var shader = CompileTypedShader(format, (format << 12) | IdentitySwizzle, MemoryOffset, opcode, DestinationRegister, typed: false);
+        Assert.Equal(expected, RunOnce(vulkan, shader, initial));
+    }
+
+    // Two registers of packed halves: x and y, then z and w.
+    private static uint[] Halves(float x, float y, float z, float w)
+    {
+        static uint Bits(float value) => BitConverter.HalfToUInt16Bits((System.Half)value);
+        return [Bits(x) | (Bits(y) << 16), Bits(z) | (Bits(w) << 16)];
+    }
+
     public static IEnumerable<object[]> TypedStoreCases()
     {
         // instruction format, descriptor word 3, opcode (4 = X .. 7 = XYZW), byte offset,

@@ -313,6 +313,50 @@ public static class ScalarValueEquivalence
         return true;
     }
 
+    // A hash that equivalent values share: it follows the same rules as Equivalent (an invariant phi is its value, a
+    // leaf compares its payload, a memory read its access record) down to the given depth, so a search for the first
+    // equivalent value only has to compare the values in its bucket.
+    public static int StructuralHash(MemoryAccessTable memory, ScalarValue value, int depth)
+    {
+        value = ResolveInvariant(memory, value);
+        var hash = new HashCode();
+        hash.Add(value.Kind);
+        hash.Add(value.Type);
+        hash.Add(value.Operation);
+        hash.Add(value.Operands.Length);
+        switch (value.Kind)
+        {
+            case ScalarValueKind.Constant or ScalarValueKind.UserData or ScalarValueKind.ResourceTableWord or ScalarValueKind.MemoryAperture:
+                hash.Add(value.Payload);
+                return hash.ToHashCode();
+            case ScalarValueKind.ShaderBase:
+                return hash.ToHashCode();
+            case ScalarValueKind.FirstLane:
+                hash.Add(value.Payload);
+                break;
+            case ScalarValueKind.ScalarAddressWord or ScalarValueKind.ScalarBufferWord when value.MemoryIndex < memory.Count:
+                var access = memory[value.MemoryIndex];
+                hash.Add(access.Kind);
+                hash.Add(access.Offset);
+                hash.Add(access.ComponentIndex);
+                hash.Add(access.DataDwords);
+                break;
+            case ScalarValueKind.Phi:
+                hash.Add(value.PhiBlock);
+                break;
+        }
+
+        if (depth > 0)
+        {
+            foreach (var operand in value.Operands)
+            {
+                hash.Add(StructuralHash(memory, operand, depth - 1));
+            }
+        }
+
+        return hash.ToHashCode();
+    }
+
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<ScalarValue, StrongBox> ResolvedPhis = new();
 
     [System.ThreadStatic]

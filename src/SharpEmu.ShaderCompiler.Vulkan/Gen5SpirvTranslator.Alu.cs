@@ -1910,8 +1910,7 @@ public static partial class Gen5SpirvTranslator
             }
 
             var m0 = LoadS(M0ScalarRegister);
-            _moveRelativeOffsets ??= Ir.Gen5MoveRelativeOffsets.Analyze(_request.Program);
-            if (_moveRelativeOffsets.TryGetValue(instruction.Pc, out var offsets))
+            if (TryGetMoveRelativeOffsets(instruction.Pc, out var offsets))
             {
                 return TryEmitBoundedMoveRelative(instruction, destination, m0, offsets, out error);
             }
@@ -3145,11 +3144,19 @@ public static partial class Gen5SpirvTranslator
             if (instruction.Opcode == "SGetpcB64")
             {
                 {
-                    // The draw's shader base comes from push data, so one module serves every address.
-                    var (baseLow, baseHigh) = LoadShaderBase();
-                    var next = IAdd64(
-                        Pair64(baseLow, baseHigh),
-                        ULong(unchecked(instruction.ProgramOffset + (ulong)(instruction.Words.Count * sizeof(uint)))));
+                    // The draw's shader base comes from push data, so one module serves every address; a linked function
+                    // reads its own address from the call targets.
+                    var size = (ulong)(instruction.Words.Count * sizeof(uint));
+                    uint next;
+                    if (instruction.Control is ShaderFunctionPcControl function && _callTargetSlots is not null)
+                    {
+                        next = IAdd64(CallTarget(function.FunctionAddress), ULong(unchecked(function.FunctionOffset + size)));
+                    }
+                    else
+                    {
+                        var (baseLow, baseHigh) = LoadShaderBase();
+                        next = IAdd64(Pair64(baseLow, baseHigh), ULong(unchecked(instruction.ProgramOffset + size)));
+                    }
                     StoreS(destination, Narrow(next));
                     StoreS(destination + 1, Narrow(ShiftRightLogical64(next, ULong(32))));
                     return true;

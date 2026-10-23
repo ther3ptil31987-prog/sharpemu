@@ -9,6 +9,7 @@ using SharpEmu.Libs.Gpu.Rendering;
 using SharpEmu.Libs.VideoOut;
 using Silk.NET.Vulkan;
 using Xunit;
+using BindingLayout = SharpEmu.ShaderCompiler.Resources.BindingLayout;
 
 namespace SharpEmu.Libs.Tests.VideoOut;
 
@@ -33,6 +34,28 @@ public sealed class ComputePipelineOwnershipTests
             method.Invoke(host, [RuntimeHelpers.GetUninitializedObject(typeof(ComputePipelineDescription)), default(PipelineHandle)]));
         Assert.Same(failure, thrown.InnerException);
         Assert.Same(pending, entries[0UL]);
+    }
+
+    // A linked program compiles one module at a time: while one of its modules compiles, another module of the same
+    // program waits instead of taking a compiler slot.
+    [Fact]
+    public void LinkedProgram_WaitsForItsModuleInFlight()
+    {
+        var host = RuntimeHelpers.GetUninitializedObject(Presenter);
+        var field = Presenter.GetField("_pendingComputePipelines", Members)!;
+        var entries = (IDictionary)Activator.CreateInstance(field.FieldType)!;
+        field.SetValue(host, entries);
+        var running = new TaskCompletionSource();
+        Presenter.GetField("_linkedComputeCompiles", Members)!.SetValue(host, new Dictionary<ulong, Task> { [0x1234] = running.Task });
+        var description = new ComputePipelineDescription
+        {
+            Input = new ComputeInputInfo(),
+            Program = new ShaderProgram(0x55),
+            Stage = new ShaderProgramInfo { Hash = 0x1234, Bindings = new BindingLayout { CallTargetCount = 1 } },
+        };
+        var method = Presenter.GetMethod("TryCreateComputePipeline", Members)!;
+        Assert.False((bool)method.Invoke(host, [description, default(PipelineHandle)])!);
+        Assert.Empty(entries);
     }
 
     [Fact]

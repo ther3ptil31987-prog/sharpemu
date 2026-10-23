@@ -32,7 +32,26 @@ public sealed partial class ScalarValueGraph
         UserDataBase = userDataBase;
         UserDataCount = userDataCount;
         ExcludedUserDataRegisters = excludedUserDataRegisters;
+        CallArgumentRegisters = CountCallArgumentRegisters(program);
     }
+
+    // The call entries of a linked program (Gen5ShaderCallLinker.Link) write their record's argument as a pair of
+    // user-data registers from CallArgumentRegisterBase, one pair per distinct nonzero argument in the order the entries
+    // first name them (Gen5ShaderCallLinker.CallEntryArguments), instead of constants. A game rebuilds its hit-group
+    // tables at new addresses as often as every frame; the plan then stays valid for a table whose argument blocks
+    // moved, and each dispatch supplies the arguments (ResourceRuntimeInputs.WithCallArguments). A null argument stays
+    // the constant, so the callee's null checks still fold.
+    public const uint CallArgumentRegisterBase = 256;
+
+    public uint CallArgumentRegisters { get; }
+
+    // A program linked with run-time record arguments has one pair, which holds the record the host evaluates a callee's
+    // values for (CallRecordPlanner.AddRecordRanges).
+    public static uint CountCallArgumentRegisters(Gen5ShaderProgram program) =>
+        CallRecordPlanner.HasRuntimeEntries(program) ? 2 : 2 * (uint)Gen5ShaderCallLinker.CallEntryArguments(program).Length;
+
+    public bool IsCallArgumentRegister(uint register) =>
+        register >= CallArgumentRegisterBase && register - CallArgumentRegisterBase < CallArgumentRegisters;
 
     public Gen5ShaderProgram Program { get; }
     public IrControlFlowGraph ControlFlow { get; }
@@ -49,10 +68,17 @@ public sealed partial class ScalarValueGraph
     public IReadOnlyList<ScalarValue> Values => _values;
 
     internal Dictionary<uint, ScalarValue> BranchConditions { get; } = [];
+
+    // The argument pair each call entry with a run-time argument keeps (ShaderCallEntryControl.RuntimeArgument), by the
+    // entry's pc.
+    internal Dictionary<uint, (ScalarValue Low, ScalarValue High)> CallRecordArguments { get; } = [];
     internal Dictionary<uint, ScalarValue> ConditionalMaskResults { get; } = [];
     internal Dictionary<uint, ScalarValue[]> UnsignedMedianSources { get; } = [];
 
     public bool Equivalent(ScalarValue left, ScalarValue right) => ScalarValueEquivalence.Equivalent(Memory, left, right);
+
+    // Equivalent values hash equally (see ScalarValueEquivalence.StructuralHash).
+    public int StructuralHash(ScalarValue value) => ScalarValueEquivalence.StructuralHash(Memory, value, 4);
 
     // The graph is complete once built, so a phi's invariant value never changes; the
     // resource evaluator asks for it on every draw.

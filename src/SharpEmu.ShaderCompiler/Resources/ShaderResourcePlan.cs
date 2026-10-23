@@ -125,8 +125,20 @@ public sealed class ShaderResourcePlan
     // The handles each memory access reads, after flattened reads were replaced.
     public MemoryAccessBinding?[] Accesses { get; private set; } = [];
 
+    // The image accesses whose image or sampler a linked callee's call record holds, and what each callee reads through its
+    // records' arguments besides them (by its slot among the program's call targets; empty unless linked with run-time
+    // arguments).
+    public IReadOnlyList<CallRecordAccess> CallRecords { get; private set; } = [];
+    public IReadOnlyList<CallRecordCalleePlan> CallRecordCallees { get; private set; } = [];
+
+    // The argument pair each run-time call entry keeps (ScalarValueGraph.CallRecordArguments), after flattened reads were
+    // replaced as in the accesses.
+    public IReadOnlyDictionary<uint, (ScalarValue Low, ScalarValue High)> CallRecordArguments { get; private set; } =
+        new Dictionary<uint, (ScalarValue Low, ScalarValue High)>();
+
     public static ShaderResourcePlan Extract(Gen5ShaderProgram program, ShaderStage stage, ulong hash, uint userDataBase, uint userDataCount,
-        IReadOnlySet<uint>? fixedFunctionVertexLoads = null, Action<ShaderResourcePlan>? beforeResourceTracking = null, uint waveSize = 64)
+        IReadOnlySet<uint>? fixedFunctionVertexLoads = null, Action<ShaderResourcePlan>? beforeResourceTracking = null, uint waveSize = 64,
+        bool callRecords = false, bool callMarks = false)
     {
         // Mesh system inputs are not uniform user data, even when a GS pointer occupies s0:s1.
         var graph = ScalarGraphDiskCache.Build(program, userDataBase, userDataCount, fixedFunctionVertexLoads, waveSize,
@@ -164,13 +176,21 @@ public sealed class ShaderResourcePlan
                 access.Active is null ? null : Rewrite(access.Active));
         }
 
+        plan.CallRecordArguments = graph.CallRecordArguments.ToDictionary(
+            static entry => entry.Key, entry => (Rewrite(entry.Value.Low), Rewrite(entry.Value.High)));
+
         // Diagnostics observe rewritten values before descriptor validation.
         beforeResourceTracking?.Invoke(plan);
-        var tracked = ResourceTracker.Track(plan);
+        var tracked = ResourceTracker.Track(plan, callRecords);
         plan.DescriptorSources = tracked.Sources;
         plan.Info = tracked.Info;
+        plan.CallRecords = tracked.CallRecords;
         if (program.Instructions.Any(instruction => instruction.Control is ShaderCallFaultControl))
             plan.Info.UsesDeviceAddresses = true;
+        if (plan.Info.UsesDeviceAddresses && Gen5ShaderCallLinker.IsLinked(program))
+            plan.Info.UsesDeviceAddressFallback = true;
+        if (callMarks && program.Instructions.Any(static instruction => instruction.Control is ShaderCallFaultControl { ReturnPc: not null }))
+            plan.Info.UsesCallMarks = true;
         plan.IndirectImages = tracked.IndirectImages;
         plan.BufferCandidateTables = tracked.BufferCandidateTables;
         plan.DynamicReads = plan.DynamicReads.Where(read => !tracked.IndirectReads.Contains(read)).ToList();
@@ -229,6 +249,7 @@ public sealed class ShaderResourcePlan
         plan.CleanFlatSlots = cleanSlots;
         plan.ResourceBranches = ResourceBranchBlock.Build(plan, Rewrite);
         plan.DeviceAddressRanges = DeviceAddressRangePlanner.Plan(plan);
+        plan.CallRecordCallees = CallRecordPlanner.Plan(plan);
 
         // Each written handle owns three flattened slots after the table reads: base
         // low, base high and size, which the shader checks every store against.

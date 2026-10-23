@@ -73,6 +73,10 @@ public class ShaderProgramInfo
     // The specialized resources and the binding layout the module was compiled against.
     public SpecializedResourceInfo? Resources { get; init; }
     public BindingLayout? Bindings { get; init; }
+
+    // What the host resolves for each record of each callee, by callee slot, when the program reads its records'
+    // descriptors at run time (ShaderCompileRequest.CallRecordCallees).
+    public IReadOnlyList<CallRecordCallee> CallRecordCallees { get; init; } = [];
 }
 
 // One shader stage bound to a draw or dispatch: its program, the resources it reads and its code base.
@@ -83,6 +87,22 @@ public readonly record struct ShaderStageResources(ShaderProgramInfo? Program, R
     public DispatchThreadLimits? ThreadLimits { get; init; }
 
     public MeshDrawParameters? MeshDraw { get; init; }
+
+    // The distinct nonzero arguments of this dispatch's call records (ShaderCallLibrary.Arguments): the module compares a
+    // site's argument relative to them, so one module serves every position of the tables.
+    public ulong[]? CallArguments { get; init; }
+
+    // The addresses of this dispatch's callees (Gen5ShaderCallLinker.CallTargets): the module tests records against them,
+    // so one module serves every placement of the functions.
+    public ulong[]? CallTargets { get; init; }
+
+    // Every (target, argument) record of this dispatch's call tables when its program reads its records' descriptors at
+    // run time (ShaderProgramInfo.CallRecordCallees).
+    public (ulong Target, ulong Argument)[]? CallRecords { get; init; }
+
+    // The buffers those records' callees compute V#s for from their arguments (CallRecordBufferWords), which the host makes
+    // resident with the dispatch's other device-address ranges.
+    public DeviceAddressRange[]? CallRecordRanges { get; init; }
 
     public void WriteDispatchThreadLimits(Span<uint> shaderData)
     {
@@ -96,6 +116,23 @@ public readonly record struct ShaderStageResources(ShaderProgramInfo? Program, R
         shaderData[offset] = limits.X;
         shaderData[offset + 1] = limits.Y;
         shaderData[offset + 2] = limits.Z;
+    }
+
+    public void WriteCallData(Span<uint> shaderData)
+    {
+        if (Program?.Bindings is not { } layout || layout.CallArgumentCount == 0 && layout.CallTargetCount == 0) return;
+        if (shaderData.Length != layout.ShaderDataDwordCount || (CallArguments?.Length ?? 0) != layout.CallArgumentCount ||
+            (CallTargets?.Length ?? 0) != layout.CallTargetCount)
+        {
+            throw SubmissionScheduler.Fatal("The linked shader call has invalid shader data.");
+        }
+
+        var offset = (int)layout.CallArgumentsDword;
+        foreach (var address in (CallArguments ?? []).Concat(CallTargets ?? []))
+        {
+            shaderData[offset++] = (uint)address;
+            shaderData[offset++] = (uint)(address >> 32);
+        }
     }
 
     public void WriteMeshDrawParameters(Span<uint> shaderData)

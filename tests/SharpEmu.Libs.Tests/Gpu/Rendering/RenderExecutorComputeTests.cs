@@ -3,6 +3,7 @@
 
 using SharpEmu.Libs.Gpu.Rendering;
 using SharpEmu.Libs.Tests.Gpu.Scheduling;
+using BindingLayout = SharpEmu.ShaderCompiler.Resources.BindingLayout;
 using Xunit;
 using static SharpEmu.Libs.Tests.Gpu.Rendering.RenderExecutorFixtures;
 
@@ -66,6 +67,26 @@ public sealed class RenderExecutorComputeTests : IDisposable
             await dispatch.WaitAsync(TimeSpan.FromSeconds(10));
         }
         Assert.Equal(2, _pipelines.ComputePipelineAttempts);
+        AssertDispatched(4, 2, 1);
+    }
+
+    // A program linked with its callees can take the driver minutes to compile: its dispatch is skipped while the module
+    // compiles, before any command is recorded for it, and runs once the module is ready.
+    [Fact]
+    public void LinkedProgram_SkipsItsDispatchWhileTheModuleCompiles()
+    {
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _pipelines.PendingComputeCompletion = completion.Task;
+        var program = new ShaderProgramInfo { Stage = ShaderStageKind.Compute, Hash = 0x1234, Bindings = new BindingLayout { CallTargetCount = 1 } };
+        _pipelines.Compute = ComputeProgram(Stage(program));
+        _executor.Dispatch(5, Banks(), 4, 2, 1, 0x41);
+        AssertNotDispatched();
+        Assert.Equal(1, _pipelines.ComputePipelineAttempts);
+        Assert.DoesNotContain("preparation_begin", _host.Calls);
+        Assert.Equal("reset_bindings", _host.Calls[^1]);
+
+        completion.SetResult();
+        _executor.Dispatch(6, Banks(), 4, 2, 1, 0x41);
         AssertDispatched(4, 2, 1);
     }
 

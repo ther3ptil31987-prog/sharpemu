@@ -33,6 +33,7 @@ public static class DeviceAddressRangePlanner
     {
         var ranges = new List<DeviceAddressRangePlan>();
         var handles = new List<ScalarValue>();
+        var slotsByHash = new Dictionary<int, List<int>>();
         for (var index = 0; index < plan.Memory.Count; index++)
         {
             var memory = plan.Memory[index];
@@ -58,10 +59,27 @@ public static class DeviceAddressRangePlanner
                 }
             }
 
-            var slot = handles.FindIndex(existing => plan.Graph.Equivalent(existing, handle));
+            var hash = plan.Graph.StructuralHash(handle);
+            if (!slotsByHash.TryGetValue(hash, out var hashSlots))
+            {
+                hashSlots = [];
+                slotsByHash.Add(hash, hashSlots);
+            }
+
+            var slot = -1;
+            foreach (var existing in hashSlots)
+            {
+                if (plan.Graph.Equivalent(handles[existing], handle))
+                {
+                    slot = existing;
+                    break;
+                }
+            }
+
             if (slot < 0)
             {
                 slot = handles.Count;
+                hashSlots.Add(slot);
                 handles.Add(handle);
                 ranges.Add(new DeviceAddressRangePlan((uint)slot, handle.Operands[0], handle.Operands[1], [], false, true, long.MaxValue, long.MinValue, false));
             }
@@ -341,9 +359,15 @@ public static class DeviceAddressRangePlanner
                 plan.Accesses[memoryIndex]?.Handle is not { Kind: ScalarValueKind.BufferHandle, Operands.Length: 4 } handle)
                 throw new ResourcePlanException("The shader function buffer has no descriptor.");
             var words = new uint[4];
-            for (var component = 0; component < 4; component++)
-                if (!evaluator.Evaluate(handle.Operands[component], out words[component]))
-                    throw new ResourcePlanException("The shader function buffer range cannot be resolved.");
+            var resolved = true;
+            for (var component = 0; component < 4 && resolved; component++)
+                resolved = evaluator.Evaluate(handle.Operands[component], out words[component]);
+            if (!resolved)
+            {
+                // A V# of a callee linked with run-time arguments: the host resolves it for each record (CallRecordCallee).
+                if (plan.CallRecordCallees.Count != 0) continue;
+                throw new ResourcePlanException("The shader function buffer range cannot be resolved.");
+            }
             var address = words[0] | ((ulong)(words[1] & 0xFFFF) << 32);
             if ((words[1] & 0x80000000) != 0)
                 throw new ResourcePlanException("The shader function uses an unsupported swizzled buffer.");

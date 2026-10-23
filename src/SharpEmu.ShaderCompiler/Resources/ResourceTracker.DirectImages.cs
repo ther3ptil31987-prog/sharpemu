@@ -94,27 +94,67 @@ public sealed partial class ResourceTracker
         return true;
     }
 
+    // A walk that reaches this many instructions before the register is written again keeps the load.
+    private const int MaxConsumerWalkInstructions = 4096;
+
+    private Dictionary<uint, int>? _instructionIndexByPc;
+
+    // The index of the first instruction at or after pc, in the program's ascending pc order.
+    private int FirstInstructionAt(uint pc)
+    {
+        var instructions = _graph.Program.Instructions;
+        if (_instructionIndexByPc is null)
+        {
+            _instructionIndexByPc = new Dictionary<uint, int>(instructions.Count);
+            for (var index = 0; index < instructions.Count; index++)
+            {
+                _instructionIndexByPc.TryAdd(instructions[index].Pc, index);
+            }
+        }
+
+        if (_instructionIndexByPc.TryGetValue(pc, out var found))
+        {
+            return found;
+        }
+
+        var low = 0;
+        var high = instructions.Count;
+        while (low < high)
+        {
+            var middle = low + ((high - low) >> 1);
+            if (instructions[middle].Pc < pc) low = middle + 1;
+            else high = middle;
+        }
+
+        return low;
+    }
+
     // Resource-graph uses omit ordinary shader arithmetic; check those reads before removing a load.
     private bool HasOnlyImageConsumers(MemoryAccessInfo memory, ScalarValue handle)
     {
         var instructions = _graph.Program.Instructions;
-        var load = instructions.First(instruction => instruction.Pc == memory.Pc);
+        var loadIndex = FirstInstructionAt(memory.Pc);
+        if (loadIndex >= instructions.Count || instructions[loadIndex].Pc != memory.Pc) return false;
+        var load = instructions[loadIndex];
         if (memory.ComponentIndex >= load.Destinations.Count) return false;
         var destination = load.Destinations[(int)memory.ComponentIndex];
         if (destination.Kind != Gen5OperandKind.ScalarRegister || destination.Value >= 106) return false;
         var flow = _graph.ControlFlow;
-        var initialBlock = Enumerable.Range(0, flow.Blocks.Count)
-            .First(index => load.Pc >= flow.Blocks[index].StartPc && load.Pc < flow.Blocks[index].EndPc);
+        var initialBlock = flow.BlockOf(load.Pc);
+        if (initialBlock < 0) return false;
         var pending = new Queue<(int Block, uint Start)>();
         var visited = new HashSet<(int Block, uint Start)>();
+        var walked = 0;
         pending.Enqueue((initialBlock, load.Pc + (uint)load.Words.Count * sizeof(uint)));
         while (pending.TryDequeue(out var position))
         {
             if (!visited.Add(position)) continue;
             var block = flow.Blocks[position.Block];
             var overwritten = false;
-            foreach (var instruction in instructions.Where(instruction => instruction.Pc >= position.Start && instruction.Pc < block.EndPc))
+            for (var index = FirstInstructionAt(position.Start); index < instructions.Count && instructions[index].Pc < block.EndPc; index++)
             {
+                var instruction = instructions[index];
+                if (++walked > MaxConsumerWalkInstructions) return false;
                 if (instruction.Opcode.Contains("rel", StringComparison.OrdinalIgnoreCase) ||
                     instruction.Opcode.Contains("GprIdx", StringComparison.Ordinal)) return false;
                 var allowedImage = instruction.Control is Gen5ImageControl &&

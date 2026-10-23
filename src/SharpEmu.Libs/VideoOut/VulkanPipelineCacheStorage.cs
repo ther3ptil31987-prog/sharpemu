@@ -29,6 +29,9 @@ internal static class VulkanPipelineCacheStorage
             CacheFileName));
     }
 
+    // The directory of the linked programs' pipeline caches and kept callees (ShaderCallUnionStore), beside the cache file.
+    internal static string LinkedDirectory(string? titleId, string? configuredPath) => ResolvePath(titleId, configuredPath) + ".linked";
+
     internal static string GetLegacyPath()
     {
         var root = OperatingSystem.IsMacOS()

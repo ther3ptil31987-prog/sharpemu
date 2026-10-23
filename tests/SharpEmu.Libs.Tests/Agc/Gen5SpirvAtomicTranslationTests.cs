@@ -17,7 +17,8 @@ public sealed class Gen5SpirvAtomicTranslationTests
     private const ulong ShaderAddress = 0x1_0000_0000;
     private const ulong BufferAddress = 0x1_0000_1000;
 
-    // SPIR-V decoration 23.
+    // SPIR-V decorations 20 and 23.
+    private const uint AliasedDecoration = 20;
     private const uint CoherentDecoration = 23;
 
     [Fact]
@@ -190,6 +191,31 @@ public sealed class Gen5SpirvAtomicTranslationTests
         Assert.False(HasDecoration(spirv, CoherentDecoration));
     }
 
+    [Fact]
+    public void GlcDwordPairs_AreOneAccessThroughAnAliasedPairView()
+    {
+        // BUFFER_STORE_DWORDX2 v[2:3] glc, then BUFFER_LOAD_DWORDX2 v[2:3] glc, against the V# in s[0:3]. The GPU does an
+        // aligned DWORDX2 as one 64-bit access, so a thread group polling another's {flag, value} pair never sees half of it.
+        var spirv = CompileComputeSpirv(
+            [0xE0744000, 0x80000200, 0xE0344000, 0x80000200],
+            BufferDescriptorRegisters());
+
+        Assert.True(HasDecoration(spirv, AliasedDecoration));
+        Assert.True(LoadsDwordPair(spirv));
+    }
+
+    [Fact]
+    public void DwordPairsWithoutGlc_StayDwordAccesses()
+    {
+        // The same accesses without GLC: no other thread group polls them.
+        var spirv = CompileComputeSpirv(
+            [0xE0740000, 0x80000200, 0xE0340000, 0x80000200],
+            BufferDescriptorRegisters());
+
+        Assert.False(HasDecoration(spirv, AliasedDecoration));
+        Assert.False(LoadsDwordPair(spirv));
+    }
+
     private static Dictionary<uint, uint> BufferDescriptorRegisters() => new()
     {
         // V# in s[0:3]: base=BufferAddress, stride=0, numRecords=64 bytes, type=0.
@@ -280,6 +306,31 @@ public sealed class Gen5SpirvAtomicTranslationTests
         }
 
         return false;
+    }
+
+    // An OpLoad whose result is a two-component 32-bit unsigned vector.
+    private static bool LoadsDwordPair(byte[] spirv)
+    {
+        var instructions = new List<uint[]>();
+        for (var offset = 5 * sizeof(uint); offset + sizeof(uint) <= spirv.Length;)
+        {
+            var wordCount = Math.Max((int)(BinaryPrimitives.ReadUInt32LittleEndian(spirv.AsSpan(offset, sizeof(uint))) >> 16), 1);
+            var words = new uint[wordCount];
+            for (var index = 0; index < wordCount; index++)
+            {
+                words[index] = BinaryPrimitives.ReadUInt32LittleEndian(spirv.AsSpan(offset + (index * sizeof(uint)), sizeof(uint)));
+            }
+
+            instructions.Add(words);
+            offset += wordCount * sizeof(uint);
+        }
+
+        // OpTypeInt <id> 32 0, OpTypeVector <id> <component> 2, OpLoad <type> <id> <pointer>.
+        var uintTypes = instructions.Where(words => (ushort)words[0] == (ushort)SpirvOp.TypeInt && words.Length >= 4 &&
+            words[2] == 32 && words[3] == 0).Select(words => words[1]).ToHashSet();
+        var pairTypes = instructions.Where(words => (ushort)words[0] == (ushort)SpirvOp.TypeVector && words.Length >= 4 &&
+            uintTypes.Contains(words[2]) && words[3] == 2).Select(words => words[1]).ToHashSet();
+        return instructions.Any(words => (ushort)words[0] == (ushort)SpirvOp.Load && words.Length >= 4 && pairTypes.Contains(words[1]));
     }
 
     private static bool ContainsConstant(byte[] spirv, uint expected)

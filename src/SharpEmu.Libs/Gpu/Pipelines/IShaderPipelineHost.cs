@@ -58,6 +58,15 @@ internal interface IShaderPipelineHost
 
     bool MipStatisticsSubgroupReduction => false;
 
+    // Whether the host reads a linked program's call records at run time, through descriptor set 1.
+    bool RuntimeCallRecordsSupported => false;
+
+    // The call marks of programs linked with run-time call records (CallMarks): whether the host binds and reads them, how
+    // many mark snapshots it has read, and the snapshot that last held a bit (0 when none did).
+    bool CallMarksSupported => false;
+    long CallMarkSnapshots => 0;
+    long CallMarkedAt(uint bit) => 0;
+
     bool GraphicsSubgroupOperationsEnabled { get; }
 
     // The device supports shaderSharedInt64Atomics, so LDS 64-bit atomics can be
@@ -93,6 +102,9 @@ internal interface IShaderPipelineHost
 
     // Reads one guest dword only when no GPU work may still own the range.
     bool TryReadCleanGuestWord(ulong address, out uint word);
+
+    // For an error report: why a clean read of the dword can fail (mapping and GPU ownership).
+    string DescribeCleanRead(ulong address) => "";
 
     // Copies guest bytes the CPU already holds, without synchronizing. False when the GPU
     // may own the range (or, for a clean read, when a clean word read would be refused);

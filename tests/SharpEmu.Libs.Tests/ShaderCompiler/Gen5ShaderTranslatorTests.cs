@@ -35,6 +35,49 @@ public sealed class Gen5ShaderTranslatorTests
         Assert.Equal(0u, instruction.Pc);
     }
 
+    // MUBUF keeps opcode bit 7 at bit 25 (MIMG keeps it at bit 0); bit 0 is the low bit of OFFSET. A byte load at an odd
+    // offset (BUFFER_LOAD_UBYTE v1, v9, s[8:11] idxen offset:1, from a BVH build kernel) decoded as MubufRaw88 and lost
+    // its destination.
+    [Fact]
+    public void MubufOddOffsetKeepsItsOpcode()
+    {
+        var memory = new FakeCpuMemory(ProgramAddress, 0x100);
+        WriteWords(memory, ProgramAddress, 0xE0202001u, 0x80020109u, 0xBF810000u);
+
+        var context = new CpuContext(memory, Generation.Gen5);
+        Assert.True(
+            Gen5ShaderTranslator.TryDecodeProgram(
+                context,
+                ProgramAddress,
+                out var program,
+                out var error),
+            error);
+
+        var instruction = program.Instructions[0];
+        Assert.Equal(Gen5ShaderEncoding.Mubuf, instruction.Encoding);
+        Assert.Equal("BufferLoadUbyte", instruction.Opcode);
+        Assert.Equal([Gen5Operand.Vector(1)], instruction.Destinations);
+    }
+
+    // MUBUF opcodes 128-135 (bit 25 set) are the D16 format forms; a D16 register holds two components, so XY takes one
+    // register and XYZW two.
+    [Theory]
+    [InlineData(0xE2101000u, 0x80010100u, "BufferStoreFormatD16X", 1)]
+    [InlineData(0xE20C1000u, 0x80010200u, "BufferLoadFormatD16Xyzw", 2)]
+    [InlineData(0xE2041000u, 0x80010200u, "BufferLoadFormatD16Xy", 1)]
+    public void MubufD16FormatOpcodesDecodeWithTheirRegisters(uint word, uint extra, string opcode, int registers)
+    {
+        var memory = new FakeCpuMemory(ProgramAddress, 0x100);
+        WriteWords(memory, ProgramAddress, word, extra, 0xBF810000u);
+
+        var context = new CpuContext(memory, Generation.Gen5);
+        Assert.True(Gen5ShaderTranslator.TryDecodeProgram(context, ProgramAddress, out var program, out var error), error);
+
+        var instruction = program.Instructions[0];
+        Assert.Equal(opcode, instruction.Opcode);
+        Assert.Equal((uint)registers, Assert.IsType<Gen5BufferMemoryControl>(instruction.Control).DwordCount);
+    }
+
     [Fact]
     public void Vop2FmamkF16ConsumesLiteralDword()
     {
