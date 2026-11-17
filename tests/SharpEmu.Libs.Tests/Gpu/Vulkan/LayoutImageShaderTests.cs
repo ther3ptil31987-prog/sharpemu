@@ -147,12 +147,14 @@ public sealed class LayoutImageShaderTests(HeadlessVulkanFixture fixture, ITestO
 
     private sealed class Run : IDisposable
     {
-        public Run(HeadlessVulkan vulkan, Gen5ShaderProgram program, uint[] registers, uint threadCount, bool imageInt64Atomics = false)
+        public Run(HeadlessVulkan vulkan, Gen5ShaderProgram program, uint[] registers, uint threadCount, bool imageInt64Atomics = false,
+            Func<ResourceSpecialization, ResourceSpecialization>? specialize = null)
         {
             Plan = ShaderResourcePlan.Extract(program, ShaderStage.Compute, 0x5348_4152_5045_4D55, 0, 64);
             var snapshot = new ResourceSnapshot();
             var specialization = new ResourceSpecialization();
             Assert.True(ResourceMaterializer.Materialize(Plan, Inputs(registers), ref snapshot, ref specialization));
+            specialization = specialize?.Invoke(specialization) ?? specialization;
             Snapshot = snapshot;
             Resources = ResourceMaterializer.ApplyTo(Plan, specialization);
             var layout = BindingLayout.Allocate(
@@ -254,7 +256,7 @@ public sealed class LayoutImageShaderTests(HeadlessVulkanFixture fixture, ITestO
         new()
         {
             ImageView = image.GetOrCreateView(ImageViewDescription.Default with { Format = image.Backing.Format, Usage = ImageUsageFlags.SampledBit, LevelCount = levelCount, Type = arrayed ? ImageViewType.Type2DArray : ImageViewType.Type2D }),
-            ImageLayout = ImageLayout.ShaderReadOnlyOptimal,
+            ImageLayout = ImageLayout.General,
         };
 
     private static DescriptorImageInfo StorageView(CachedImage image, uint mip) =>
@@ -290,8 +292,8 @@ public sealed class LayoutImageShaderTests(HeadlessVulkanFixture fixture, ITestO
         };
         run.Dispatch(run.BindImages(views, [sampler]), command =>
         {
-            first.Transition(ImageLayout.ShaderReadOnlyOptimal, AccessFlags.ShaderReadBit, null, command);
-            second.Transition(ImageLayout.ShaderReadOnlyOptimal, AccessFlags.ShaderReadBit, null, command);
+            first.Transition(AccessFlags.ShaderReadBit, null, command);
+            second.Transition(AccessFlags.ShaderReadBit, null, command);
         });
 
         Assert.Equal(BitConverter.SingleToUInt32Bits(0.25f), run.ResultWord(0));
@@ -335,7 +337,7 @@ public sealed class LayoutImageShaderTests(HeadlessVulkanFixture fixture, ITestO
             [run.ResourceAt(FirstImageAddress)] = [new()
             {
                 ImageView = source.GetOrCreateView(sourceRequest.View),
-                ImageLayout = ImageLayout.ShaderReadOnlyOptimal,
+                ImageLayout = ImageLayout.General,
             }],
             [run.ResourceAt(SecondImageAddress)] = [new()
             {
@@ -345,8 +347,8 @@ public sealed class LayoutImageShaderTests(HeadlessVulkanFixture fixture, ITestO
         };
         run.Dispatch(run.BindImages(views), command =>
         {
-            source.Transition(ImageLayout.ShaderReadOnlyOptimal, AccessFlags.ShaderReadBit, null, command);
-            target.Transition(ImageLayout.General, AccessFlags.ShaderWriteBit, null, command);
+            source.Transition(AccessFlags.ShaderReadBit, null, command);
+            target.Transition(AccessFlags.ShaderWriteBit, null, command);
         });
 
         Assert.Equal(BitConverter.SingleToUInt32Bits(0.25f), run.ResultWord(0));
@@ -382,8 +384,8 @@ public sealed class LayoutImageShaderTests(HeadlessVulkanFixture fixture, ITestO
         };
         run.Dispatch(run.BindImages(views, hostSamplers), command =>
         {
-            floatImage.Transition(ImageLayout.ShaderReadOnlyOptimal, AccessFlags.ShaderReadBit, null, command);
-            integerImage.Transition(ImageLayout.ShaderReadOnlyOptimal, AccessFlags.ShaderReadBit, null, command);
+            floatImage.Transition(AccessFlags.ShaderReadBit, null, command);
+            integerImage.Transition(AccessFlags.ShaderReadBit, null, command);
         });
 
         Assert.Equal(BitConverter.SingleToUInt32Bits(2.0f), run.ResultWord(0));
@@ -423,14 +425,61 @@ public sealed class LayoutImageShaderTests(HeadlessVulkanFixture fixture, ITestO
         var views = new Dictionary<int, DescriptorImageInfo[]> { [0] = [SampledView(first)], [1] = [SampledView(second)] };
         run.Dispatch(run.BindImages(views, [sampler, sampler]), command =>
         {
-            first.Transition(ImageLayout.ShaderReadOnlyOptimal, AccessFlags.ShaderReadBit, null, command);
-            second.Transition(ImageLayout.ShaderReadOnlyOptimal, AccessFlags.ShaderReadBit, null, command);
+            first.Transition(AccessFlags.ShaderReadBit, null, command);
+            second.Transition(AccessFlags.ShaderReadBit, null, command);
         });
         Assert.Equal(BitConverter.SingleToUInt32Bits(0.25f), run.ResultWord(0));
         Assert.Equal(BitConverter.SingleToUInt32Bits(distinctImages ? 0.75f : 0.25f), run.ResultWord(1));
         run.Harness.AssertNoValidationMessages();
         output.WriteLine($"Verified descriptor aliases on {vulkan.DeviceName}; validation={vulkan.ValidationEnabled}.");
     }
+
+    // The program above with one image and one sampler descriptor repeated, bound once (the draw's groups) or to each of its
+    // resources (a specialization without groups): both sample the same texel, and the shared sampler as well.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void RepeatedDescriptorsSampleTheSameBoundOnceOrToEachResource(bool bindingEach)
+    {
+        var vulkan = fixture.Vulkan;
+        if (!GatePrerequisites.Ready(vulkan)) return;
+        var program = Program(
+            MoveVector(0, 0, 0x3F00_0000), MoveVector(4, 1, 0x3F00_0000),
+            Image(8, "ImageSampleLz", 16, 32, dmask: 1),
+            BufferAccess(16, "BufferStoreDword", ResultRegister, 0, vectorData: 4),
+            Image(24, "ImageSampleLz", 24, 36, dmask: 1),
+            BufferAccess(32, "BufferStoreDword", ResultRegister, 4, vectorData: 4), EndProgram(40));
+        var registers = UserData();
+        uint[] descriptor = [(uint)FirstImageAddress, Format32Float << 20, 0, 0xFAC | (ImageType2D << 28), 0, 0, 0, 0];
+        descriptor.CopyTo(registers, 16);
+        descriptor.CopyTo(registers, 24);
+        using var run = new Run(vulkan, program, registers, 1, specialize: bindingEach ? WithoutGroups : null);
+        var imageClass = ImageDescriptorBinding.ForImage(run.Resources.Info.Images[0])!.Value;
+        Assert.Equal(bindingEach ? 2 : 1, run.Request.Bindings.Find(imageClass)!.Resources.Count);
+        Assert.Equal(bindingEach ? 2 : 1, run.Request.Bindings.Find(DescriptorBindingKind.Samplers)!.Resources.Count);
+        var image = run.Harness.CreateImage(Describe(0, Format.R32Sfloat, GuestPixelFormat.Bits32Float, 2, 1, 1));
+        run.Harness.UploadImage(image, MemoryMarshal.AsBytes<float>([0.25f, 0.75f]), ImageTestHarness.WholeImageCopies(image.Description, 0));
+        var sampler = run.Runner.CreateSampler(Filter.Linear);
+        var views = new Dictionary<int, DescriptorImageInfo[]> { [0] = [SampledView(image)], [1] = [SampledView(image)] };
+        run.Dispatch(run.BindImages(views, [sampler, sampler]), command =>
+            image.Transition(AccessFlags.ShaderReadBit, null, command));
+
+        // Both resources sample the centre of the same two-texel image through the same linear sampler: the texels' mean.
+        Assert.Equal(BitConverter.SingleToUInt32Bits(0.5f), run.ResultWord(0));
+        Assert.Equal(BitConverter.SingleToUInt32Bits(0.5f), run.ResultWord(1));
+        run.Harness.AssertNoValidationMessages();
+        output.WriteLine($"Verified repeated descriptors bound {(bindingEach ? "to each resource" : "once")} on {vulkan.DeviceName}.");
+    }
+
+    // The specialization with no descriptor groups: every image and sampler resource its own binding.
+    private static ResourceSpecialization WithoutGroups(ResourceSpecialization specialization) => new()
+    {
+        BaseBufferCount = specialization.BaseBufferCount,
+        StableImageBindings = specialization.StableImageBindings,
+        Buffers = [.. specialization.Buffers],
+        Images = [.. specialization.Images],
+        BufferCandidateTables = [.. specialization.BufferCandidateTables],
+    };
 
     // Image 0 is plain, image 1 the indirect root, image 2 its candidate for key 1; a mip load
     // reads texel (0, 0) of mip 1 of two-level images.
@@ -498,7 +547,7 @@ public sealed class LayoutImageShaderTests(HeadlessVulkanFixture fixture, ITestO
             var command = new CommandBuffer(harness.Scheduler.Current.Handle);
             foreach (var image in images)
             {
-                image.Transition(ImageLayout.ShaderReadOnlyOptimal, AccessFlags.ShaderReadBit, null, command);
+                image.Transition(AccessFlags.ShaderReadBit, null, command);
             }
 
             runner.Dispatch(
@@ -559,7 +608,7 @@ public sealed class LayoutImageShaderTests(HeadlessVulkanFixture fixture, ITestO
         {
             var command = new CommandBuffer(harness.Scheduler.Current.Handle);
             foreach (var image in images)
-                image.Transition(ImageLayout.ShaderReadOnlyOptimal, AccessFlags.ShaderReadBit, null, command);
+                image.Transition(AccessFlags.ShaderReadBit, null, command);
             runner.Dispatch([0x1000, 0], new Dictionary<DescriptorBindingKind, GpuBuffer[]> { [DescriptorBindingKind.Buffers] = [result] },
                 1, flattenedTable: snapshot.FlattenedResourceTable, boundImages: bound);
         });
@@ -572,7 +621,7 @@ public sealed class LayoutImageShaderTests(HeadlessVulkanFixture fixture, ITestO
     [InlineData(0x80000000u, true, 91u)]
     [InlineData(1u, false, 91u)]
     [InlineData(0x80000000u, false, 37u)]
-    public void MixedImageDimensionsSelectTheirOwnBinding(uint mask, bool arrayFirst, uint expected)
+    public void MixedImageDimensionsReadTheirOwnTexture(uint mask, bool arrayFirst, uint expected)
     {
         var vulkan = fixture.Vulkan;
         if (!GatePrerequisites.Ready(vulkan)) return;
@@ -585,7 +634,10 @@ public sealed class LayoutImageShaderTests(HeadlessVulkanFixture fixture, ITestO
         var views = new DescriptorImageInfo[images.Length];
         for (var index = 0; index < images.Length; index++)
         {
-            var array = request.Resources.Info.Images[index].Dimension == ImageDimension.Dim2DArray;
+            // The T# says what the texture holds; the module reads a 2D one, whose only layer it reads at slice 1, as a
+            // one-layer array.
+            var array = snapshot.Images[index][3] >> 28 == 13;
+            var arrayView = request.Resources.Info.Images[index].Dimension == ImageDimension.Dim2DArray;
             var description = Describe((ulong)index * 0x10000, Format.R32Uint, GuestPixelFormat.Bits32UInt, 1, 1, 1);
             description.Resources = new SubresourceCount(1, array ? 2u : 1u);
             images[index] = harness.CreateImage(description);
@@ -596,10 +648,10 @@ public sealed class LayoutImageShaderTests(HeadlessVulkanFixture fixture, ITestO
                 ImageView = images[index].GetOrCreateView(ImageViewDescription.Default with
                 {
                     Format = Format.R32Uint,
-                    Type = array ? ImageViewType.Type2DArray : ImageViewType.Type2D,
+                    Type = arrayView ? ImageViewType.Type2DArray : ImageViewType.Type2D,
                     LayerCount = description.Resources.Layers,
                 }),
-                ImageLayout = ImageLayout.ShaderReadOnlyOptimal,
+                ImageLayout = ImageLayout.General,
             };
         }
         var bound = request.Bindings.Descriptors
@@ -609,7 +661,7 @@ public sealed class LayoutImageShaderTests(HeadlessVulkanFixture fixture, ITestO
         {
             var command = new CommandBuffer(harness.Scheduler.Current.Handle);
             foreach (var image in images)
-                image.Transition(ImageLayout.ShaderReadOnlyOptimal, AccessFlags.ShaderReadBit, null, command);
+                image.Transition(AccessFlags.ShaderReadBit, null, command);
             runner.Dispatch([0x1000, 0], new Dictionary<DescriptorBindingKind, GpuBuffer[]> { [DescriptorBindingKind.Buffers] = [result] },
                 1, flattenedTable: snapshot.FlattenedResourceTable, boundImages: bound);
         });
@@ -645,7 +697,7 @@ public sealed class LayoutImageShaderTests(HeadlessVulkanFixture fixture, ITestO
         };
         var views = new Dictionary<int, DescriptorImageInfo[]> { [0] = [wideView] };
         run.Dispatch(run.BindImages(views), command =>
-            target.Transition(ImageLayout.General, AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit, null, command));
+            target.Transition(AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit, null, command));
 
         var result = MemoryMarshal.Cast<byte, uint>(run.Harness.ReadImage(target, copies, texelBytes)).ToArray();
         // The second atomic had the larger low dword but the smaller high dword, so it must not win.
@@ -700,7 +752,7 @@ public sealed class LayoutImageShaderTests(HeadlessVulkanFixture fixture, ITestO
         var sampler = run.Runner.CreateSampler(Filter.Nearest, addressMode, maxLod: 16);
         var views = new Dictionary<int, DescriptorImageInfo[]> { [run.ResourceAt(FirstImageAddress)] = [SampledView(image, levelCount: 4)] };
         run.Dispatch(run.BindImages(views, [sampler]), command =>
-            image.Transition(ImageLayout.ShaderReadOnlyOptimal, AccessFlags.ShaderReadBit, null, command));
+            image.Transition(AccessFlags.ShaderReadBit, null, command));
 
         float[] gathered = [.. Enumerable.Range(0, 4).Select(index => BitConverter.UInt32BitsToSingle(run.ResultWord(index)))];
         Assert.Equal([lowerLeft, lowerRight, upperRight, upperLeft], gathered);
@@ -731,7 +783,7 @@ public sealed class LayoutImageShaderTests(HeadlessVulkanFixture fixture, ITestO
         var sentinel = Enumerable.Repeat(0xFFFF_FFFFu, texelCount).ToArray();
         run.Harness.UploadImage(target, MemoryMarshal.AsBytes<uint>(sentinel), copies);
         var views = new Dictionary<int, DescriptorImageInfo[]> { [0] = [StorageView(target, 0), StorageView(target, 1)] };
-        run.Dispatch(run.BindImages(views), command => target.Transition(ImageLayout.General, AccessFlags.ShaderWriteBit, null, command));
+        run.Dispatch(run.BindImages(views), command => target.Transition(AccessFlags.ShaderWriteBit, null, command));
 
         var texels = MemoryMarshal.Cast<byte, uint>(run.Harness.ReadImage(target, copies, (ulong)texelCount * 4)).ToArray();
         Assert.Equal(0u, texels[0]);

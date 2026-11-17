@@ -89,19 +89,42 @@ internal static unsafe partial class VulkanVideoPresenter
         private bool InCrossQueueOrderWindow(int queueId) =>
             _crossQueueWindows is { } windows && windows.TryGetValue(queueId, out var entry) && !entry.Completed;
 
+        private bool InAnyCrossQueueOrderWindow()
+        {
+            if (_crossQueueWindows is not { } windows)
+            {
+                return false;
+            }
+
+            foreach (var entry in windows.Values)
+            {
+                if (!entry.Completed)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        // Test hook: runs between MustHoldForCrossQueueOrder's window check and its wake arm.
+        internal Action? CrossQueueHoldCheckedForTest;
+
         public bool MustHoldForCrossQueueOrder(int queueId)
         {
             if (!InCrossQueueOrderWindow(queueId)) return false;
-            // The foreign label is deferred, so its publication must wake this suspended queue.
+            CrossQueueHoldCheckedForTest?.Invoke();
+            // The foreign label is deferred, so its publication must wake this suspended queue. Check again after arming: a
+            // publication that completed the entry before the arm saw no armed wake, so holding then would never be woken.
             Volatile.Write(ref _partialLabelReadBlocked, 1);
-            return true;
+            return InCrossQueueOrderWindow(queueId);
         }
 
         public bool TryDeferOrderedWrite(int queueId, ulong address, ReadOnlySpan<byte> source)
         {
             if (!InCrossQueueOrderWindow(queueId)) return false;
-            var entry = _guestPublications.AddWrite(queueId, address, (ulong)source.Length);
             var payload = source.ToArray();
+            var entry = _guestPublications.AddWrite(queueId, address, (ulong)source.Length, payload);
             try
             {
                 if (OnCommandThread) _commandThread!.Post(() => RecordDeferredWrite(entry, payload));
@@ -120,14 +143,13 @@ internal static unsafe partial class VulkanVideoPresenter
         {
             try
             {
-                DrainDraws();
                 var tick = _scheduler.QueueMemoryPublication(() => PublishGuestEntry(entry, () =>
                 {
                     if (!_guestMemory.TryWrite(entry.Address, payload))
                         throw SubmissionScheduler.Fatal($"Cannot publish a held-back command write: address=0x{entry.Address:X16}.");
                 }), _guestPublications.PredecessorTick(entry));
                 _guestPublications.Register(entry, tick);
-                if (tick == _scheduler.CurrentTick) _ = BeginBatchedGuestCommands();
+                if (tick == _scheduler.CurrentTick) EnsureBatchedGuestCommands();
                 if (_scheduler.IsTickKnownComplete(tick)) _scheduler.RunCompletedOperations();
             }
             catch (Exception exception)
@@ -164,7 +186,7 @@ internal static unsafe partial class VulkanVideoPresenter
                 var tick = _scheduler.QueueMemoryPublication(
                     () => PublishDeferredSignal(entry, false, static () => { }), _guestPublications.PredecessorTick(entry));
                 _guestPublications.Register(entry, tick);
-                if (tick == _scheduler.CurrentTick) _ = BeginBatchedGuestCommands();
+                if (tick == _scheduler.CurrentTick) EnsureBatchedGuestCommands();
                 if (_scheduler.IsTickKnownComplete(tick)) _scheduler.RunCompletedOperations();
             }
             catch (Exception exception)
@@ -194,7 +216,7 @@ internal static unsafe partial class VulkanVideoPresenter
                 if (OnCommandThread) _commandThread!.Run(() => _scheduler.Finish());
                 else _scheduler.Finish();
             }
-            var entry = _guestPublications.AddAfterPending(queueId, write.Destination, size, write.Value);
+            var entry = _guestPublications.AddAfterPending(queueId, write.Destination, size, write.Value, write.WaitForGpu);
             if (entry is null) return false;
             var captured = write;
             try
@@ -214,7 +236,6 @@ internal static unsafe partial class VulkanVideoPresenter
         {
             try
             {
-                DrainDraws();
                 using var completionScope = RenderPhaseProfile.MeasureDetail(RenderPhaseProfile.Phase.CommandEndOfPipe);
                 var hasSignal = write.Kind is EndOfPipeWriteKind.InterruptOnly or EndOfPipeWriteKind.Interrupt32 or
                     EndOfPipeWriteKind.Interrupt64 or EndOfPipeWriteKind.InterruptWriteBack32 or
@@ -222,9 +243,9 @@ internal static unsafe partial class VulkanVideoPresenter
                     EndOfPipeWriteKind.FlipWithWrite32 or EndOfPipeWriteKind.FlipWithInterruptWriteBack32;
                 _ = CurrentRecording();
                 var dependency = _guestPublications.PredecessorTick(entry);
-                if (hasSignal)
+                if (hasSignal || write.WaitForGpu)
                 {
-                    _ = BeginBatchedGuestCommands();
+                    EnsureBatchedGuestCommands();
                     dependency = _scheduler.CurrentTick;
                 }
                 var isFlip = write.FlipRequestId != 0;
@@ -271,7 +292,7 @@ internal static unsafe partial class VulkanVideoPresenter
                     _signalBatch = batch;
                 }
                 _guestPublications.Register(entry, tick);
-                if (tick == _scheduler.CurrentTick) _ = BeginBatchedGuestCommands();
+                if (tick == _scheduler.CurrentTick) EnsureBatchedGuestCommands();
                 // A device query per label is costly; the render loop runs later completions.
                 if (_scheduler.IsTickKnownComplete(tick)) _scheduler.RunCompletedOperations();
             }

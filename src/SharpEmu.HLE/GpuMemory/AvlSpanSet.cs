@@ -13,11 +13,32 @@ public sealed class AvlSpanSet
         public Node? Left;
         public Node? Right;
         public int Height = 1;
+        public int Count = 1;
     }
 
+    // A new snapshot copies the last one's spans outside the extent of every span removed or inserted since, and walks the
+    // tree only inside it. SHARPEMU_SPAN_SNAPSHOT_SPLICE=0 walks the whole tree.
+    private static readonly bool SpliceSnapshots = Environment.GetEnvironmentVariable("SHARPEMU_SPAN_SNAPSHOT_SPLICE") != "0";
+
     private Node? _root;
+    private SpanSnapshot? _snapshot = SpanSnapshot.Empty;
+    private SpanSnapshot _built = SpanSnapshot.Empty;
+    private ulong _changedStart = ulong.MaxValue;
+    private ulong _changedEnd;
+    internal int SplicedSnapshots { get; private set; }
     public bool IsEmpty => _root is null;
-    public void Clear() => _root = null;
+    public void Clear()
+    {
+        _root = null;
+        Built(SpanSnapshot.Empty);
+    }
+
+    private void NoteChange(ulong start, ulong end)
+    {
+        _snapshot = null;
+        _changedStart = Math.Min(_changedStart, start);
+        _changedEnd = Math.Max(_changedEnd, end);
+    }
 
     public void Add(ulong address, ulong size)
     {
@@ -37,6 +58,7 @@ public sealed class AvlSpanSet
             _root = Delete(_root, next.Start);
         }
         _root = Insert(_root, start, end);
+        NoteChange(start, end);
     }
 
     public void Remove(ulong address, ulong size)
@@ -45,10 +67,12 @@ public sealed class AvlSpanSet
         var end = address + size;
         var current = FindAtOrBelow(address);
         if (current is null || current.End <= address) current = FindAtOrAbove(address);
+        if (current is null || current.Start >= end) return;
         while (current is not null && current.Start < end)
         {
             var spanStart = current.Start;
             var spanEnd = current.End;
+            NoteChange(spanStart, spanEnd);
             _root = Delete(_root, spanStart);
             if (spanStart < address) _root = Insert(_root, spanStart, address);
             if (spanEnd > end)
@@ -81,6 +105,95 @@ public sealed class AvlSpanSet
         return false;
     }
 
+    public SpanSnapshot Snapshot()
+    {
+        if (_snapshot is { } snapshot) return snapshot;
+        if (_root is null) return Built(SpanSnapshot.Empty);
+        var starts = new ulong[_root.Count];
+        var ends = new ulong[starts.Length];
+        if (SpliceSnapshots && TrySplice(starts, ends))
+        {
+            SplicedSnapshots++;
+        }
+        else
+        {
+            var index = 0;
+            Collect(_root, starts, ends, ref index);
+        }
+
+        return Built(new SpanSnapshot(starts, ends));
+    }
+
+    private SpanSnapshot Built(SpanSnapshot snapshot)
+    {
+        _changedStart = ulong.MaxValue;
+        _changedEnd = 0;
+        return _snapshot = _built = snapshot;
+    }
+
+    // The spans that end before the changed extent or start after it are the last snapshot's; the tree gives the ones
+    // between. False when the counts disagree, and the caller walks the whole tree.
+    private bool TrySplice(ulong[] starts, ulong[] ends)
+    {
+        var builtStarts = _built.Starts;
+        var builtEnds = _built.Ends;
+        var before = FirstAtOrAbove(builtEnds, _changedStart);
+        var after = FirstAbove(builtStarts, _changedEnd);
+        var tail = builtStarts.Length - after;
+        var middle = starts.Length - before - tail;
+        if (middle < 0) return false;
+        builtStarts[..before].CopyTo(starts);
+        builtEnds[..before].CopyTo(ends);
+        var index = before;
+        if (!CollectWithin(_root, _changedStart, _changedEnd, starts, ends, ref index, before + middle) ||
+            index != before + middle)
+        {
+            return false;
+        }
+
+        builtStarts[after..].CopyTo(starts.AsSpan(index));
+        builtEnds[after..].CopyTo(ends.AsSpan(index));
+        return true;
+    }
+
+    private static int FirstAtOrAbove(ReadOnlySpan<ulong> values, ulong bound)
+    {
+        int low = 0, high = values.Length;
+        while (low < high)
+        {
+            var middle = (low + high) >>> 1;
+            if (values[middle] < bound) low = middle + 1;
+            else high = middle;
+        }
+        return low;
+    }
+
+    private static int FirstAbove(ReadOnlySpan<ulong> values, ulong bound)
+    {
+        int low = 0, high = values.Length;
+        while (low < high)
+        {
+            var middle = (low + high) >>> 1;
+            if (values[middle] <= bound) low = middle + 1;
+            else high = middle;
+        }
+        return low;
+    }
+
+    // In order, the spans that touch [low, high]; false when they would pass the limit.
+    private static bool CollectWithin(Node? node, ulong low, ulong high, ulong[] starts, ulong[] ends, ref int index, int limit)
+    {
+        if (node is null) return true;
+        if (node.Start >= low && !CollectWithin(node.Left, low, high, starts, ends, ref index, limit)) return false;
+        if (node.End >= low && node.Start <= high)
+        {
+            if (index == limit) return false;
+            starts[index] = node.Start;
+            ends[index++] = node.End;
+        }
+        return node.End > high || CollectWithin(node.Right, low, high, starts, ends, ref index, limit);
+    }
+
     public List<GuestSpan> GetOverlappingRanges(ulong address, ulong size)
     {
         ValidateRange(address, size);
@@ -109,6 +222,15 @@ public sealed class AvlSpanSet
         VisitOverlaps(node.Right, start, end, result);
     }
 
+    private static void Collect(Node? node, ulong[] starts, ulong[] ends, ref int index)
+    {
+        if (node is null) return;
+        Collect(node.Left, starts, ends, ref index);
+        starts[index] = node.Start;
+        ends[index++] = node.End;
+        Collect(node.Right, starts, ends, ref index);
+    }
+
     private Node? FindAtOrBelow(ulong address)
     {
         Node? result = null;
@@ -132,7 +254,11 @@ public sealed class AvlSpanSet
     }
 
     private static int Height(Node? node) => node?.Height ?? 0;
-    private static void UpdateHeight(Node node) => node.Height = Math.Max(Height(node.Left), Height(node.Right)) + 1;
+    private static void UpdateHeight(Node node)
+    {
+        node.Height = Math.Max(Height(node.Left), Height(node.Right)) + 1;
+        node.Count = (node.Left?.Count ?? 0) + (node.Right?.Count ?? 0) + 1;
+    }
 
     private static Node RotateRight(Node node)
     {

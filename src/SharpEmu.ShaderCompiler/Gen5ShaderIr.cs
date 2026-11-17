@@ -275,7 +275,11 @@ public sealed record Gen5BufferMemoryControl(
     bool Glc,
     bool Slc,
     bool Typed = false,
-    uint TypedFormat = 0) : Gen5InstructionControl;
+    uint TypedFormat = 0) : Gen5InstructionControl
+{
+    // Applies only to raw, shader-loaded descriptors; CPU-specialized formats are already unified.
+    public bool SplitDescriptorFormat { get; init; }
+}
 
 public sealed record Gen5ExportControl(
     uint Target,
@@ -369,8 +373,13 @@ public sealed record Gen5ShaderProgram(
     ulong Address,
     IReadOnlyList<Gen5ShaderInstruction> Instructions)
 {
+    public uint VertexIndexRegister { get; init; } = 5;
+    public IReadOnlyList<uint> InstanceIndexRegisters { get; init; } = [8];
     public IReadOnlySet<uint> FunctionBufferAccesses { get; init; } = new HashSet<uint>();
     public bool IsFusedProgram { get; init; }
+    // First pc of the continuation half of a fused program (the HS of a merged LS/HS).
+    public uint? FusedContinuationPc { get; init; }
+    public Gen5TessellationRegisters TessellationRegisters { get; init; } = Gen5TessellationRegisters.Merged;
 
     private const uint PixelColorTargetCount = 8;
     private const int PixelColorMaskBits = 4;

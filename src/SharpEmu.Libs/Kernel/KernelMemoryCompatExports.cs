@@ -160,10 +160,8 @@ public static partial class KernelMemoryCompatExports
 
     private static ulong _nextVirtualAddress;
     // Start the address search outside the host memory regions.
-    // On macOS, also exclude the graphics memory region below 0x7000000000.
     private static readonly ulong DefaultMapSearchBase =
-        OperatingSystem.IsWindows() ? 0x1_0000_0000UL :
-        OperatingSystem.IsMacOS() ? 0x70_0000_0000UL : 0x20_0000_0000UL;
+        OperatingSystem.IsWindows() ? 0x1_0000_0000UL : 0x20_0000_0000UL;
     private static ulong _threadAtexitCountCallback;
     private static ulong _threadAtexitReportCallback;
     private static ulong _threadDtorsCallback;
@@ -933,7 +931,7 @@ public static partial class KernelMemoryCompatExports
     private static int WcschrCore(CpuContext ctx, ulong address, ushort needle)
     {
         const int maxReadBytes = 4096;
-        var readBuffer = GC.AllocateUninitializedArray<byte>(maxReadBytes);
+        Span<byte> readBuffer = stackalloc byte[maxReadBytes];
         const ulong maxUnits = 1_048_576;
         for (ulong index = 0; index < maxUnits;)
         {
@@ -951,7 +949,7 @@ public static partial class KernelMemoryCompatExports
                 remainingBytes);
             readBytes &= ~(WideCharSize - 1);
             if (readBytes == 0 ||
-                !TryReadCompat(ctx, unitAddress, readBuffer.AsSpan(0, readBytes)))
+                !TryReadCompat(ctx, unitAddress, readBuffer[..readBytes]))
             {
                 return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
             }
@@ -959,7 +957,7 @@ public static partial class KernelMemoryCompatExports
             for (var offset = 0; offset < readBytes; offset += WideCharSize)
             {
                 var unit = BinaryPrimitives.ReadUInt16LittleEndian(
-                    readBuffer.AsSpan(offset, WideCharSize));
+                    readBuffer.Slice(offset, WideCharSize));
                 if (unit == needle)
                 {
                     ctx[CpuRegister.Rax] = unitAddress + (ulong)offset;
@@ -3370,19 +3368,27 @@ public static partial class KernelMemoryCompatExports
             return MemoryInvalidArgument;
         lock (_memoryGate)
         {
-            if (length > _flexibleBacking.Available)
-                return MemoryNoSpace;
-            var space = ResolveBackingSpace(ctx);
-            if (space is null || !TrySelectBackingAddress(space, requested, length, alignment, flags, out var address))
-                return MemoryNoSpace;
-            if (!_flexibleBacking.TryMap(space, address, length, mode, out var blocks))
-                return MemoryNoSpace;
-            foreach (var block in blocks)
-                ReplaceMappedRegionRangeLocked(new MappedRegion(block.Address, block.Size, protection,
-                    true, false, 0, block.Offset));
-            GuestGpuMemoryHook.NoteMapped(address, length, mode);
-            return ctx.TryWriteUInt64(pointer, address) ? 0 : MemoryFault;
+            var result = MapFlexibleRangeLocked(ctx, requested, length, protection, flags, alignment, mode, out var address);
+            return result != 0 ? result : ctx.TryWriteUInt64(pointer, address) ? 0 : MemoryFault;
         }
+    }
+
+    private static int MapFlexibleRangeLocked(CpuContext ctx, ulong requested, ulong length, int protection,
+        ulong flags, ulong alignment, GuestPageProtection mode, out ulong address)
+    {
+        address = 0;
+        if (length > _flexibleBacking.Available)
+            return MemoryNoSpace;
+        var space = ResolveBackingSpace(ctx);
+        if (space is null || !TrySelectBackingAddress(space, requested, length, alignment, flags, out address))
+            return MemoryNoSpace;
+        if (!_flexibleBacking.TryMap(space, address, length, mode, out var blocks))
+            return MemoryNoSpace;
+        foreach (var block in blocks)
+            ReplaceMappedRegionRangeLocked(new MappedRegion(block.Address, block.Size, protection,
+                true, false, 0, block.Offset));
+        GuestGpuMemoryHook.NoteMapped(address, length, mode);
+        return 0;
     }
 
     [SysAbiExport(
@@ -3683,6 +3689,16 @@ public static partial class KernelMemoryCompatExports
 
                 return (int)OrbisGen2Result.ORBIS_GEN2_OK;
             }
+        }
+
+        // A loaded module's own segments (its code and data) are mapped by the loader, not by these calls.
+        if (KernelModuleRegistry.TryGetModuleSegment(queryAddress, out var segment))
+        {
+            return (startOut != 0 && !ctx.TryWriteUInt64(startOut, segment.Start)) ||
+                (endOut != 0 && !ctx.TryWriteUInt64(endOut, segment.End - 1)) ||
+                (protectionOut != 0 && !TryWriteInt32(ctx, protectionOut, segment.Protection))
+                ? (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT
+                : (int)OrbisGen2Result.ORBIS_GEN2_OK;
         }
 
         return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
@@ -4898,7 +4914,7 @@ public static partial class KernelMemoryCompatExports
         if (_resolvedGuestPaths.TryGetValue(guestPath, out var memoized) &&
             string.Equals(memoized.Root, roots, StringComparison.Ordinal))
         {
-            return memoized.Path;
+            return GameFileOverlay.ResolveFile(memoized.Path);
         }
 
         var resolved = ResolveGuestPathUncached(guestPath);
@@ -4911,7 +4927,7 @@ public static partial class KernelMemoryCompatExports
             Interlocked.Increment(ref _resolvedGuestPathCount);
         }
 
-        return resolved;
+        return GameFileOverlay.ResolveFile(resolved);
     }
 
     private static string ResolveGuestPathUncached(string guestPath)
@@ -6053,7 +6069,7 @@ public static partial class KernelMemoryCompatExports
         return result;
     }
 
-    private static int InvokeKernelMemoryOperation(
+    internal static int InvokeKernelMemoryOperation(
         CpuContext ctx,
         Func<CpuContext, int> operation,
         ulong rdi = 0,
@@ -6521,6 +6537,9 @@ public static partial class KernelMemoryCompatExports
 
         return false;
     }
+
+    public static bool TryReadGuestStructure(CpuContext ctx, ulong address, Span<byte> destination) =>
+        ctx.Memory.TryRead(address, destination) || TryReadShaderGuestMemory(address, destination);
 
     internal static bool TryReadShaderGuestMemory(
         ulong address,
@@ -7030,6 +7049,7 @@ public static partial class KernelMemoryCompatExports
 
     private static bool TryGetAprFileSize(string hostPath, out ulong size)
     {
+        hostPath = GameFileOverlay.ResolveFile(hostPath);
         size = 0;
 
         string cachePath;
@@ -7069,7 +7089,7 @@ public static partial class KernelMemoryCompatExports
                 return true;
             }
 
-            if (!new DirectoryInfo(cachePath).Exists && !App0Archive.IsDirectory(cachePath))
+            if (!new DirectoryInfo(cachePath).Exists && !GameFileOverlay.IsDirectory(cachePath) && !App0Archive.IsDirectory(cachePath))
             {
                 if (IsUnderApp0(cachePath))
                 {
@@ -7091,6 +7111,7 @@ public static partial class KernelMemoryCompatExports
 
     private static bool TryWriteHostPathStat(CpuContext ctx, ulong statAddress, string hostPath, bool isDirectory)
     {
+        hostPath = isDirectory ? GameFileOverlay.DirectorySource(hostPath) ?? hostPath : GameFileOverlay.ResolveFile(hostPath);
         if (isDirectory ? !Directory.Exists(hostPath) : !File.Exists(hostPath))
         {
             return TryWriteArchivePathStat(ctx, statAddress, hostPath, isDirectory);
@@ -7128,7 +7149,7 @@ public static partial class KernelMemoryCompatExports
         File.Exists(hostPath) || App0Archive.TryGetFile(hostPath, out _);
 
     private static bool HostDirectoryExists(string hostPath) =>
-        Directory.Exists(hostPath) || App0Archive.IsDirectory(hostPath);
+        Directory.Exists(hostPath) || GameFileOverlay.IsDirectory(hostPath) || App0Archive.IsDirectory(hostPath);
 
     private static string OpenFileName(Stream stream) => stream switch
     {
@@ -7272,6 +7293,7 @@ public static partial class KernelMemoryCompatExports
             ? Directory.EnumerateFileSystemEntries(hostPath).Select(Path.GetFileName)
             : [];
         var children = onDisk
+            .Concat(GameFileOverlay.List(hostPath))
             .Concat(App0Archive.List(hostPath).Select(static entry => entry.Name))
             .Where(static name => !string.IsNullOrEmpty(name))
             .Distinct(HostFsPath.Comparer)
@@ -7985,6 +8007,107 @@ public static partial class KernelMemoryCompatExports
         LogOpenTrace($"chmod path='{guestPath}' host='{hostPath}' mode=0x{mode:X}");
         ctx[CpuRegister.Rax] = 0;
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    // utimes: times[0] is the access time and times[1] the modification time, each a timeval of seconds and
+    // microseconds; a null array sets both to the current time.
+    [SysAbiExport(
+        Nid = "0Cq8ipKr9n0",
+        ExportName = "sceKernelUtimes",
+        Target = Generation.Gen4 | Generation.Gen5,
+        LibraryName = "libKernel")]
+    public static int KernelUtimes(CpuContext ctx)
+    {
+        var pathAddress = ctx[CpuRegister.Rdi];
+        var timesAddress = ctx[CpuRegister.Rsi];
+        if (pathAddress == 0)
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
+        }
+
+        if (!TryReadNullTerminatedUtf8(ctx, pathAddress, MaxGuestStringLength, out var guestPath))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+
+        var hostPath = ResolveGuestPath(guestPath);
+        if (IsReadOnlyGuestMutationPath(guestPath))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_PERMISSION_DENIED;
+        }
+
+        var isFile = File.Exists(hostPath);
+        if (!isFile && !Directory.Exists(hostPath))
+        {
+            AddNegativeStatCacheForGuestPath(guestPath);
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_FOUND;
+        }
+
+        DateTime accessed;
+        DateTime modified;
+        if (timesAddress == 0)
+        {
+            accessed = modified = DateTime.UtcNow;
+        }
+        else if (!TryReadTimeval(ctx, timesAddress, out accessed, out var accessValid) ||
+                 !TryReadTimeval(ctx, timesAddress + 16, out modified, out var modifiedValid))
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
+        }
+        else if (!accessValid || !modifiedValid)
+        {
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
+        }
+
+        try
+        {
+            if (isFile)
+            {
+                File.SetLastAccessTimeUtc(hostPath, accessed);
+                File.SetLastWriteTimeUtc(hostPath, modified);
+            }
+            else
+            {
+                Directory.SetLastAccessTimeUtc(hostPath, accessed);
+                Directory.SetLastWriteTimeUtc(hostPath, modified);
+            }
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            // Host file times start in 1601.
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_INVALID_ARGUMENT;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            LogOpenTrace($"utimes failed path='{guestPath}' host='{hostPath}' error={exception.Message}");
+            return (int)OrbisGen2Result.ORBIS_GEN2_ERROR_PERMISSION_DENIED;
+        }
+
+        LogOpenTrace($"utimes path='{guestPath}' host='{hostPath}' accessed={accessed:O} modified={modified:O}");
+        ctx[CpuRegister.Rax] = 0;
+        return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+
+        static bool TryReadTimeval(CpuContext ctx, ulong address, out DateTime time, out bool valid)
+        {
+            time = default;
+            valid = false;
+            if (!ctx.TryReadUInt64(address, out var seconds) || !ctx.TryReadUInt64(address + 8, out var microseconds))
+            {
+                return false;
+            }
+
+            var secondsValue = unchecked((long)seconds);
+            var microsecondsValue = unchecked((long)microseconds);
+            valid = microsecondsValue is >= 0 and < 1_000_000 &&
+                    secondsValue >= DateTimeOffset.MinValue.ToUnixTimeSeconds() &&
+                    secondsValue < DateTimeOffset.MaxValue.ToUnixTimeSeconds();
+            if (valid)
+            {
+                time = DateTimeOffset.FromUnixTimeSeconds(secondsValue).AddTicks(microsecondsValue * 10).UtcDateTime;
+            }
+
+            return true;
+        }
     }
     private static bool TryCompareStringsCaseInsensitive(
         CpuContext ctx,

@@ -98,8 +98,7 @@ public sealed class ShaderPipelineCacheTests : IDisposable
             };
         }
         var mappings = Enumerable.Repeat(ColorComponentMap.Identity, 8).ToArray();
-        GraphicsPrograms Prepare() => cache.GetGraphicsPrograms(banks.Shader.Vertex, banks.Shader.Pixel,
-            banks.Context.ShaderInterface, banks.Context, mappings, pixelActive: true, depthBound: false);
+        GraphicsPrograms Prepare() => cache.GetGraphicsPrograms(banks, mappings, pixelActive: true, depthBound: false);
         Assert.True(Prepare().Available);
         var outputs = guest.Compiler.Requests[0].PixelOutputs;
         Assert.Equal(enabled && !bypass ? 2 : 1, outputs.Count);
@@ -110,6 +109,7 @@ public sealed class ShaderPipelineCacheTests : IDisposable
             Assert.Equal(1u, outputs[1].Index);
             Assert.Equal(1u, outputs[1].ExportTarget);
             banks.Context.BlendControls[0].Enable = false;
+            banks.MarkWritten(RegisterStamps.ContextBits);
             Assert.True(Prepare().Available);
             Assert.Single(guest.Compiler.Requests.Last(request => request.Stage == SharpEmu.ShaderCompiler.Resources.ShaderStage.Pixel).PixelOutputs);
         }
@@ -134,8 +134,7 @@ public sealed class ShaderPipelineCacheTests : IDisposable
         banks.Shader.Vertex.ExportAddress = vertexAddress;
         banks.Shader.Pixel.Address = pixelAddress;
         var mappings = Enumerable.Repeat(ColorComponentMap.Identity, 8).ToArray();
-        GraphicsPrograms Prepare() => cache.GetGraphicsPrograms(banks.Shader.Vertex, banks.Shader.Pixel,
-            banks.Context.ShaderInterface, banks.Context, mappings, pixelActive: true, depthBound: false);
+        GraphicsPrograms Prepare() => cache.GetGraphicsPrograms(banks, mappings, pixelActive: true, depthBound: false);
         Gen5PixelOutputBinding LastOutput() => Assert.Single(guest.Compiler.Requests
             .Last(request => request.Stage == SharpEmu.ShaderCompiler.Resources.ShaderStage.Pixel).PixelOutputs);
 
@@ -143,6 +142,7 @@ public sealed class ShaderPipelineCacheTests : IDisposable
         Assert.Equal(Gen5PixelExportFormat.Unorm16, LastOutput().ExportFormat);
         var compiled = guest.Compiler.Requests.Count;
         banks.Context.ShaderInterface.TargetOutputModes[0] = (byte)Gen5PixelExportFormat.Float16;
+        banks.MarkWritten(RegisterStamps.ContextBits);
         Assert.True(Prepare().Available);
         Assert.True(guest.Compiler.Requests.Count > compiled);
         Assert.Equal(Gen5PixelExportFormat.Float16, LastOutput().ExportFormat);
@@ -174,8 +174,7 @@ public sealed class ShaderPipelineCacheTests : IDisposable
         banks.Context.ShaderInterface.GeometryOutputPrimitiveType = 2;
         banks.UserConfig.GeometryEngineControl.PrimitiveGroupSize = 8;
         banks.UserConfig.GeometryEngineControl.VertexGroupSize = 24;
-        GraphicsPrograms Prepare() => cache.GetMeshGraphicsPrograms(banks.Shader.Vertex, banks.Shader.Pixel,
-            banks.Context.ShaderInterface, banks.Context, banks.UserConfig, [], pixelActive: false, depthBound: false);
+        GraphicsPrograms Prepare() => cache.GetMeshGraphicsPrograms(banks, banks.UserConfig, [], pixelActive: false, depthBound: false);
 
         var first = Prepare().VertexInput.Stage;
         Assert.Equal(0u, first.Program!.UserDataBase);
@@ -242,8 +241,7 @@ public sealed class ShaderPipelineCacheTests : IDisposable
         banks.UserConfig.GeometryEngineControl.VertexGroupSize = 24;
         var mapping = Enumerable.Repeat(ColorComponentMap.Identity, 8).ToArray();
 
-        GraphicsPrograms Prepare() => cache.GetMeshGraphicsPrograms(banks.Shader.Vertex, banks.Shader.Pixel,
-            banks.Context.ShaderInterface, banks.Context, banks.UserConfig, mapping, pixelActive: true, depthBound);
+        GraphicsPrograms Prepare() => cache.GetMeshGraphicsPrograms(banks, banks.UserConfig, mapping, pixelActive: true, depthBound);
         if (limit is "components")
         {
             var error = Assert.Throws<SchedulerFatalException>(() => Prepare());
@@ -283,7 +281,7 @@ public sealed class ShaderPipelineCacheTests : IDisposable
 
         public List<GraphicsPipelineDescription> Descriptions { get; } = new();
 
-        public GraphicsPrograms GetGraphicsPrograms(VertexStageRegisters vertex, PixelStageRegisters pixel, ShaderInterfaceRegisters shaderInterface, ContextRegisters context, ReadOnlySpan<ColorComponentMap> targetExportMapping, bool pixelActive, bool depthBound) => Graphics;
+        public GraphicsPrograms GetGraphicsPrograms(RegisterBanks banks, ReadOnlySpan<ColorComponentMap> targetExportMapping, bool pixelActive, bool depthBound) => Graphics;
 
         public PipelineHandle CreateGraphicsPipeline(ReadOnlySpan<ColorTargetState> colors, in DepthAttachmentState depth, VertexInputInfo vertexInput, PixelInputInfo? pixelInput, ContextRegisters context, in RenderingState rendering, PrimitiveTopology topology, bool primitiveRestartEnabled, bool disableBlending, ShaderProgram vertexProgram, ShaderProgram pixelProgram)
         {
@@ -514,6 +512,35 @@ public sealed class ShaderPipelineCacheTests : IDisposable
         Assert.Equal(2, cache.ComputePipelineCount);
     }
 
+    [Theory]
+    [InlineData(0x0200210Du, true)]
+    [InlineData(0x02C0210Du, true)]
+    [InlineData(0x02002000u, false)]
+    [InlineData(0x0200214Du, false)]
+    public void MergedTessellationMask_DoesNotTakeOverOtherGraphicsPaths(uint mask, bool expected) =>
+        Assert.Equal(expected, ShaderPipelineCache.IsMergedTessellationMask(mask));
+
+    [Fact]
+    public void GraphicsPipelineKey_SeparatesTessellationFromRectanglesAndIncludesBothStages()
+    {
+        var description = Describe();
+        var rectangle = ShaderPipelineCache.KeyOf(description);
+        rectangle.StaticParameters.Topology = PrimitiveTopology.PatchList;
+        var tessellated = ShaderPipelineCache.KeyOf(description);
+        tessellated.Tessellation = new(new ShaderProgram(10), new ShaderProgram(11), 4);
+        Assert.NotEqual(rectangle, tessellated);
+
+        var other = ShaderPipelineCache.KeyOf(description);
+        other.Tessellation = tessellated.Tessellation;
+        Assert.Equal(tessellated, other);
+        other.Tessellation = tessellated.Tessellation with { Control = new ShaderProgram(12) };
+        Assert.NotEqual(tessellated, other);
+        other.Tessellation = tessellated.Tessellation with { Evaluation = new ShaderProgram(12) };
+        Assert.NotEqual(tessellated, other);
+        other.Tessellation = tessellated.Tessellation with { InputControlPoints = 3 };
+        Assert.NotEqual(tessellated, other);
+    }
+
     [Fact]
     public void TryCreateComputePipeline_ReportsTheHostCompileAndCachesTheResult()
     {
@@ -557,12 +584,32 @@ public sealed class ShaderPipelineCacheTests : IDisposable
         Assert.Equal(2, cache.GraphicsPipelineCount);
     }
 
+    [Fact]
+    public void GraphicsPipelines_StillCompiling_AreWaitedForOutsideTheCacheLock()
+    {
+        var guest = new PipelineTestGuest();
+        guest.Host.PendingGraphicsCompiles = 2;
+        var cache = new ShaderPipelineCache(guest.Context, guest.Host, guest.Compiler, guest.Registry);
+        var host = new RecordingRenderHost();
+        var executor = new RenderExecutor(host, new CachingProvider(cache));
+
+        executor.DrawAuto(1, Banks(), Auto(3));
+
+        // The draw is not left out: it waited twice for the compile it started, then took the pipeline.
+        Assert.Single(host.Calls, call => call.StartsWith("draw ", StringComparison.Ordinal));
+        Assert.Single(guest.Host.GraphicsPipelines);
+        Assert.Equal(3, guest.Host.GraphicsPipelineRequests.Count);
+        Assert.Equal(2, guest.Host.GraphicsPipelineWaits.Count);
+        Assert.All(guest.Host.GraphicsPipelineWaits, wait => Assert.Same(guest.Host.GraphicsPipelineRequests[0], wait));
+        Assert.Equal(1, cache.GraphicsPipelineCount);
+    }
+
     // Programs from the fixtures, pipelines from the real cache over the fake host.
     private sealed class CachingProvider(ShaderPipelineCache cache) : IShaderPipelineProvider
     {
         private readonly GraphicsPrograms _programs = Programs();
 
-        public GraphicsPrograms GetGraphicsPrograms(VertexStageRegisters vertex, PixelStageRegisters pixel, ShaderInterfaceRegisters shaderInterface, ContextRegisters context, ReadOnlySpan<ColorComponentMap> targetExportMapping, bool pixelActive, bool depthBound) => _programs;
+        public GraphicsPrograms GetGraphicsPrograms(RegisterBanks banks, ReadOnlySpan<ColorComponentMap> targetExportMapping, bool pixelActive, bool depthBound) => _programs;
 
         public PipelineHandle CreateGraphicsPipeline(ReadOnlySpan<ColorTargetState> colors, in DepthAttachmentState depth, VertexInputInfo vertexInput, PixelInputInfo? pixelInput, ContextRegisters context, in RenderingState rendering, PrimitiveTopology topology, bool primitiveRestartEnabled, bool disableBlending, ShaderProgram vertexProgram, ShaderProgram pixelProgram) =>
             cache.CreateGraphicsPipeline(colors, in depth, vertexInput, pixelInput, context, in rendering, topology, primitiveRestartEnabled, disableBlending, vertexProgram, pixelProgram);
@@ -623,7 +670,7 @@ public sealed class ShaderPipelineCacheTests : IDisposable
         ColorTargetState[] colors = [new(in resolution, 0, new SharpEmu.Libs.Gpu.Buffers.ResourceSlotIdentifier(1, 1))];
         var rendering = new RenderingState { Samples = 1, ColorAttachmentCount = 1 };
         rendering.ColorAttachments[0] = new RenderingAttachment(
-            default, ImageLayout.ColorAttachmentOptimal, Format.R8G8B8A8Unorm, 0, 0, 0, 0, false, false, false, false, false);
+            default, Format.R8G8B8A8Unorm, 0, 0, 0, 0, false, false, false, false, false);
 
         var description = ShaderPipelineCache.BuildGraphicsDescription(
             colors, default, programs.VertexInput, programs.PixelInput, banks.Context, in rendering, PrimitiveTopology.TriangleList, false, false,
@@ -643,7 +690,7 @@ public sealed class ShaderPipelineCacheTests : IDisposable
         ColorTargetState[] colors = [new(in resolution, 0, new SharpEmu.Libs.Gpu.Buffers.ResourceSlotIdentifier(1, 1))];
         var rendering = new RenderingState { Samples = 1, ColorAttachmentCount = 1 };
         rendering.ColorAttachments[0] = new RenderingAttachment(
-            default, ImageLayout.ColorAttachmentOptimal, Format.R8G8B8A8Unorm, 0, 0, 0, 0, false, false, false, false, false);
+            default, Format.R8G8B8A8Unorm, 0, 0, 0, 0, false, false, false, false, false);
 
         var description = ShaderPipelineCache.BuildGraphicsDescription(
             colors, default, programs.VertexInput, null, banks.Context, in rendering, PrimitiveTopology.TriangleList, false, false,

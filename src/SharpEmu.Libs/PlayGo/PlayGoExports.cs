@@ -790,9 +790,9 @@ public static class PlayGoExports
             return CreateBaseChunkMetadata(PlayGoChunkIdKnowledge.Authoritative);
         }
 
-        var playGoDat = Path.Combine(app0Root, "sce_sys", "playgo-chunk.dat");
-        var scenarioJson = Path.Combine(app0Root, "sce_sys", "playgo-scenario.json");
-        var chunkDefsXml = Path.Combine(app0Root, "playgo-chunkdefs.xml");
+        var playGoDat = GameFileOverlay.ResolveFile(Path.Combine(app0Root, "sce_sys", "playgo-chunk.dat"));
+        var scenarioJson = GameFileOverlay.ResolveFile(Path.Combine(app0Root, "sce_sys", "playgo-scenario.json"));
+        var chunkDefsXml = GameFileOverlay.ResolveFile(Path.Combine(app0Root, "playgo-chunkdefs.xml"));
         App0Archive.Extract(chunkDefsXml);
 
         var hasMetadata = File.Exists(playGoDat) || File.Exists(scenarioJson) || File.Exists(chunkDefsXml);
@@ -824,6 +824,11 @@ public static class PlayGoExports
         }
 
         var chunkIds = LoadChunkIds(chunkDefsXml);
+        if (chunkIds.Length == 0)
+        {
+            chunkIds = LoadChunkDatChunkIds(playGoDat);
+        }
+
         if (chunkIds.Length == 0)
         {
             TracePlayGo("metadata_has_no_chunk_definitions; installed chunk ids unknown");
@@ -909,6 +914,47 @@ public static class PlayGoExports
             return Array.Empty<ushort>();
         }
         catch (System.Xml.XmlException)
+        {
+            return Array.Empty<ushort>();
+        }
+    }
+
+    // The chunk count from the playgo-chunk.dat header ("plgo" on PS4, "plgx" on PS5): magic, two version halves, the
+    // image count, the chunk count, two more counts and the file size. Chunks are numbered from 0. A header that does
+    // not match its file leaves the ids unknown.
+    private static ushort[] LoadChunkDatChunkIds(string playGoDat)
+    {
+        const uint MagicPs4 = 0x6F676C70;
+        const uint MagicPs5 = 0x78676C70;
+        try
+        {
+            if (!File.Exists(playGoDat))
+            {
+                return Array.Empty<ushort>();
+            }
+
+            using var stream = File.OpenRead(playGoDat);
+            Span<byte> header = stackalloc byte[0x14];
+            if (stream.ReadAtLeast(header, header.Length, throwOnEndOfStream: false) < header.Length ||
+                BinaryPrimitives.ReadUInt32LittleEndian(header) is not (MagicPs4 or MagicPs5) ||
+                BinaryPrimitives.ReadUInt32LittleEndian(header[0x10..]) != stream.Length)
+            {
+                return Array.Empty<ushort>();
+            }
+
+            var chunkIds = new ushort[BinaryPrimitives.ReadUInt16LittleEndian(header[0x0A..])];
+            for (var index = 0; index < chunkIds.Length; index++)
+            {
+                chunkIds[index] = (ushort)index;
+            }
+
+            return chunkIds;
+        }
+        catch (IOException)
+        {
+            return Array.Empty<ushort>();
+        }
+        catch (UnauthorizedAccessException)
         {
             return Array.Empty<ushort>();
         }

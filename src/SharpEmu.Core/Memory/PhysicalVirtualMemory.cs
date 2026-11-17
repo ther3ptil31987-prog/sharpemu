@@ -950,35 +950,6 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
             Console.Error.WriteLine($"[VMEM][ALLOC_SEARCH] start=0x{desiredAddress:X16} cursor=0x{cursor:X16} " +
                 $"size=0x{alignedSize:X} alignment=0x{effectiveAlignment:X} executable={executable}");
 
-        // macOS needs alignment over-allocation; Linux uses exact-address search.
-        if (OperatingSystem.IsMacOS())
-        {
-            var reserveSize = effectiveAlignment > PageSize
-                ? alignedSize + effectiveAlignment
-                : alignedSize;
-            try
-            {
-                var posixAddress = AllocateAt(cursor, reserveSize, executable, allowAlternative: true);
-                if (posixAddress != 0)
-                {
-                    var alignedBase = AlignUp(posixAddress, effectiveAlignment);
-                    if (alignedBase + alignedSize <= posixAddress + reserveSize)
-                    {
-                        actualAddress = alignedBase;
-                        UpdateAllocationSearchCursor(desiredAddress, effectiveAlignment, executable, alignedBase + alignedSize);
-                        return true;
-                    }
-
-                    ReleaseUntrackedAllocation(posixAddress);
-                }
-            }
-            catch
-            {
-            }
-
-            return false;
-        }
-
         for (var attempt = 0; attempt < 0x10000; attempt++)
         {
             if (cursor == 0 || ulong.MaxValue - cursor < alignedSize)
@@ -1046,40 +1017,6 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
         finally
         {
             _gate.ExitReadLock();
-        }
-    }
-
-    private void ReleaseUntrackedAllocation(ulong address)
-    {
-        ulong allocationSize = 0;
-        _gate.EnterWriteLock();
-        try
-        {
-            for (var i = 0; i < _regions.Count; i++)
-            {
-                if (_regions[i].VirtualAddress == address)
-                {
-                    allocationSize = _regions[i].Size;
-                    _allocationGaps.Remove(_regions[i].VirtualAddress);
-                    _regions.RemoveAt(i);
-                    break;
-                }
-            }
-        }
-        finally
-        {
-            _gate.ExitWriteLock();
-        }
-
-        Interlocked.Increment(ref _mappingGeneration);
-        if (_ownsStartupAddressReservations && WindowsGuestAddressReservation.ContainsImageRange(address, allocationSize))
-        {
-            if (allocationSize != 0)
-                WindowsGuestAddressReservation.DecommitImageRange(address, allocationSize);
-        }
-        else
-        {
-            _hostMemory.Free(address);
         }
     }
 
@@ -2291,25 +2228,25 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
         // there). Pre-visit the span so tracked pages are unprotected and
         // their owners dirtied before the copy; guest addresses are
         // host-identical, matching the tracker's fault addresses.
-        GuestImageWriteTracker.NotifyManagedWrite(virtualAddress, (ulong)source.Length);
-        GuestGpuMemoryHook.MarkCpuWrite(virtualAddress, (ulong)source.Length);
+        if (!source.IsEmpty && _backedSpace is { } backed && !_disposed)
+        {
+            using var singleViewWrite = GuestGpuMemoryHook.BeginCpuWrite(virtualAddress, (ulong)source.Length, emulatorWrite: true);
+            if (backed.TryWriteSingleView(virtualAddress, source))
+            {
+                NotifyGuestWriteWatch(virtualAddress, source);
+                return true;
+            }
+        }
+
+        using var write = GuestGpuMemoryHook.BeginCpuWrite(virtualAddress, (ulong)source.Length);
         var written = TryWriteCore(virtualAddress, source);
 
-        // Backed writes go through an alias no page watch covers: an upload between the mark above
-        // and the write took the old bytes and left the pages clean, and no fault reports the new ones.
-        GuestGpuMemoryHook.MarkCpuWriteLanded(virtualAddress, (ulong)source.Length);
+        // The lease publishes landed bytes before admitting another overlapping GPU claim.
         return written;
     }
 
     private bool TryWriteCore(ulong virtualAddress, ReadOnlySpan<byte> source)
     {
-        if (!source.IsEmpty && _backedSpace is { } backed && !_disposed &&
-            backed.TryWriteSingleView(virtualAddress, source))
-        {
-            NotifyGuestWriteWatch(virtualAddress, source);
-            return true;
-        }
-
         var requiresExclusiveAccess = false;
         _gate.EnterReadLock();
         try
@@ -2403,19 +2340,79 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
             return false;
         }
 
-        // Match TryWrite's managed-write notification before touching an
-        // identity-mapped guest page protected by the image tracker.
-        GuestImageWriteTracker.NotifyManagedWrite(destinationAddress, length);
-        GuestGpuMemoryHook.MarkCpuWrite(destinationAddress, length);
-        var copied = TryCopyCore(destinationAddress, sourceAddress, length);
+        if (_backedSpace is { } backed && !_disposed)
+        {
+            using var singleViewWrite = GuestGpuMemoryHook.BeginCpuWrite(destinationAddress, length, emulatorWrite: true);
+            if (backed.TryCopySingleView(destinationAddress, sourceAddress, length))
+            {
+                NotifyBackedWriteWatch(destinationAddress, length);
+                return true;
+            }
+        }
 
-        // As in TryWrite: an upload after the mark may have taken the bytes from before the copy.
-        GuestGpuMemoryHook.MarkCpuWriteLanded(destinationAddress, length);
-        return copied;
+        bool copied, needsStaging;
+        using (GuestGpuMemoryHook.BeginCpuWrite(destinationAddress, length))
+        {
+            copied = TryCopyCore(destinationAddress, sourceAddress, length, out needsStaging);
+        }
+
+        // Staging re-enters TryWrite, whose premark may wait on the GPU. Each piece obtains
+        // its own reservation; no outer reservation may span that nested premark.
+        return needsStaging ? CopyThroughStaging(destinationAddress, sourceAddress, length) : copied;
     }
 
-    private bool TryCopyCore(ulong destinationAddress, ulong sourceAddress, ulong length)
+    // HostCallTrims.MixedCopyDirect, under the read lock: a copy between the backing and private memory in one call,
+    // when the private side resolves, is committed and needs no protection change, as the TryRead or TryWrite of each
+    // staging piece would find it. The backing's read or write checks its whole span before it copies a byte, and the
+    // write notification is the one TryWrite makes. False leaves both sides untouched, and the caller stages the copy.
+    private bool TryCopyMixedDirect(ulong destinationAddress, ulong sourceAddress, ulong length,
+        MemoryRegion? sourceRegion, MemoryRegion? destinationRegion, bool sourceBacked)
     {
+        var privateAddress = sourceBacked ? destinationAddress : sourceAddress;
+        var privateRegion = sourceBacked ? destinationRegion : sourceRegion;
+        // Armed watches depend on the ordinary staging pieces' call boundaries and lengths.
+        if (GuestWriteWatch.Armed || length > int.MaxValue || privateRegion is null || privateRegion.IsReservedOnly ||
+            !TryResolveRegionOffset(privateAddress, length, privateRegion, out var offset))
+        {
+            return false;
+        }
+
+        var pointer = privateRegion.VirtualAddress + offset;
+        if (sourceBacked)
+        {
+            if (!CanWriteWithoutProtectionChange(pointer, length, privateRegion))
+            {
+                return false;
+            }
+
+            var target = new Span<byte>((void*)pointer, (int)length);
+            if (!_backedSpace!.TryReadBacking(sourceAddress, target))
+            {
+                return false;
+            }
+
+            NotifyGuestWriteWatch(destinationAddress, target);
+            return true;
+        }
+
+        if (!CanReadWithoutProtectionChange(pointer, length, privateRegion))
+        {
+            return false;
+        }
+
+        var source = new ReadOnlySpan<byte>((void*)pointer, (int)length);
+        if (!_backedSpace!.TryWriteBacking(destinationAddress, source))
+        {
+            return false;
+        }
+
+        NotifyGuestWriteWatch(destinationAddress, source);
+        return true;
+    }
+
+    private bool TryCopyCore(ulong destinationAddress, ulong sourceAddress, ulong length, out bool needsStaging)
+    {
+        needsStaging = false;
         _gate.EnterReadLock();
         try
         {
@@ -2437,6 +2434,12 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
             // The staged path re-enters TryRead/TryWrite, which may need the write lock.
             if (sourceBacked || destinationBacked)
             {
+                if (global::SharpEmu.HLE.HostCallTrims.MixedCopyDirect &&
+                    TryCopyMixedDirect(destinationAddress, sourceAddress, length, sourceRegion, destinationRegion, sourceBacked))
+                {
+                    return true;
+                }
+
                 goto staged;
             }
 
@@ -2474,7 +2477,8 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
         }
 
     staged:
-        return CopyThroughStaging(destinationAddress, sourceAddress, length);
+        needsStaging = true;
+        return false;
     }
 
     private bool TryReadExclusive(ulong virtualAddress, Span<byte> destination)

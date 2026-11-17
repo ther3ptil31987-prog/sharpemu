@@ -4,6 +4,7 @@
 using SharpEmu.HLE.GpuMemory;
 using SharpEmu.Libs.Gpu.Buffers;
 using SharpEmu.Libs.Gpu.Scheduling;
+using SharpEmu.ShaderCompiler.Resources;
 using Silk.NET.Vulkan;
 
 namespace SharpEmu.Libs.Gpu.Images;
@@ -11,15 +12,22 @@ namespace SharpEmu.Libs.Gpu.Images;
 // A descriptor the texture builder rejected inside ImageRequestBuilders.RejectInvalidDescriptors.
 public sealed class TextureDescriptorRejectedException(string message) : Exception(message);
 
-// A texture request built from the descriptor words and the shape the shader was compiled with.
-public readonly record struct TextureRequestResolution(ImageRequest Request, bool ExactFormat, Format ViewFormat, uint Swizzle);
+// A texture request built from the descriptor words and the shape the shader was compiled with. Fields, not properties:
+// a request is about 560 bytes, and passing a property to an `in` parameter copies it.
+public struct TextureRequestResolution(ImageRequest request, bool exactFormat, Format viewFormat, uint swizzle)
+{
+    public ImageRequest Request = request;
+    public bool ExactFormat = exactFormat;
+    public Format ViewFormat = viewFormat;
+    public uint Swizzle = swizzle;
+}
 
 public static partial class ImageRequestBuilders
 {
     [ThreadStatic] private static int _rejectInvalidDescriptors;
 
     // Inside this scope a descriptor the builder cannot turn into a texture request throws TextureDescriptorRejectedException
-    // instead of stopping the GPU: a call record holds whatever the game last wrote there.
+    // instead of stopping the GPU: a bindless heap record holds whatever the game last wrote there.
     public static RejectionScope RejectInvalidDescriptors()
     {
         _rejectInvalidDescriptors++;
@@ -33,6 +41,26 @@ public static partial class ImageRequestBuilders
 
     private static Exception InvalidDescriptor(string message) =>
         _rejectInvalidDescriptors > 0 ? new TextureDescriptorRejectedException(message) : SubmissionScheduler.Fatal(message);
+    internal static ShaderImageShape ShapeOf(ImageResource image) => new(
+        Volume: image.Dimension == ImageDimension.Dim3D,
+        Arrayed: image.Cube || image.Dimension is ImageDimension.Dim1DArray or ImageDimension.Dim2DArray or ImageDimension.Dim2DMsaaArray,
+        Cube: image.Cube,
+        Storage: image.ResourceClass == ImageResourceClass.Storage,
+        DynamicMip: image.MipMode == ImageMipMode.DynamicStorage,
+        NumericClass: NumericClassOf(image),
+        OneDimensional: image.Dimension is ImageDimension.Dim1D or ImageDimension.Dim1DArray,
+        R128: image.R128,
+        Multisampled: image.Dimension is ImageDimension.Dim2DMsaa or ImageDimension.Dim2DMsaaArray,
+        DepthCompare: image.DepthCompare,
+        Atomic: image.Atomic,
+        Atomic64: image.NumericClass == ImageNumericClass.Uint64);
+
+    private static TextureNumericClass NumericClassOf(ImageResource image) => image.NumericClass switch
+    {
+        ImageNumericClass.Uint or ImageNumericClass.Uint64 => TextureNumericClass.Uint,
+        ImageNumericClass.Sint => TextureNumericClass.Sint,
+        _ => TextureNumericClass.Float,
+    };
 
     // A null descriptor binds a one-texel image of the numeric class the shader expects.
     public static ImageRequest NullTexture(in ShaderImageShape shape)
@@ -391,7 +419,7 @@ public static partial class ImageRequestBuilders
     // After the lookup: a stencil association redirects to its depth owner; the view rules run on the owner.
     public static ResourceSlotIdentifier ValidateTextureOwner(GuestImageCache cache, ResourceSlotIdentifier imageIdentifier, in TextureRequestResolution resolution)
     {
-        var image = cache.GetImage(imageIdentifier);
+        var image = cache.PeekImage(imageIdentifier) ?? throw SubmissionScheduler.Fatal($"The texture owner was released: image={imageIdentifier.Index}.");
         if (image.DepthOwner.IsValid)
         {
             return image.DepthOwner;

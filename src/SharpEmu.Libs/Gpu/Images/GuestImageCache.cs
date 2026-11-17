@@ -17,11 +17,14 @@ namespace SharpEmu.Libs.Gpu.Images;
 public sealed unsafe partial class GuestImageCache : IGuestImageCache, IGuestImageStore, IDisposable
 {
     private const ulong TicksBeforeRemoval = 32;
+    private const ulong ParkedFramesBeforeRemoval = 8;
+    private const int ParkedImageLimit = 64;
+    private readonly List<ResourceSlotIdentifier> _parked = new();
     private const ulong MiB = 1024 * 1024;
 
     private readonly GpuDeviceInfo _device;
     private readonly SubmissionScheduler _scheduler;
-    private readonly RegionLock _lock = new(RegionLock.Category.ImageCache);
+    private readonly SpinReadWriteLock _lock = new();
     private readonly PageGuard _pages;
     private readonly ColorToMultisampleDepthBlit _blit;
     private readonly GpuTiler _tiler;
@@ -116,6 +119,11 @@ public sealed unsafe partial class GuestImageCache : IGuestImageCache, IGuestIma
     // The image for the request; creates, grows or replaces cached images as the overlap rules decide.
     public ResourceSlotIdentifier FindImage(ref ImageRequest request, bool exactFormat = false)
     {
+        if (SubmissionScheduler.ReadOnlyThread)
+        {
+            throw SubmissionScheduler.ReadOnlyViolation("image lookup");
+        }
+
         _bufferCache.CompleteGuestPublications?.Invoke(request.Description.Data.Address, request.Description.Data.Size,
             request.Role != ImageRole.Texture ? Buffers.GuestBufferCache.PublicationAccess.Write : Buffers.GuestBufferCache.PublicationAccess.Read);
         using var profileScope = RenderPhaseProfile.MeasureDetail(RenderPhaseProfile.Phase.ImageLookup);
@@ -134,12 +142,23 @@ public sealed unsafe partial class GuestImageCache : IGuestImageCache, IGuestIma
 
         var metadataBaseLayer = request.View.BaseLayer;
         var result = LookUpImage(ref request, exactFormat);
+        if (_insertedOverGpuImages == result)
+        {
+            _insertedOverGpuImages = ResourceSlotIdentifier.Invalid;
+            HandOverImagesToNewImage(result);
+        }
+
         CompleteLookup(result, in request, metadataBaseLayer);
         return result;
     }
 
     public void CompleteLookup(ResourceSlotIdentifier result, in ImageRequest request, uint metadataBaseLayer)
     {
+        if (SubmissionScheduler.ReadOnlyThread)
+        {
+            throw SubmissionScheduler.ReadOnlyViolation("lookup completion");
+        }
+
         if (request.Role is ImageRole.Texture or ImageRole.StorageImage)
         {
             ulong metadataAddress;
@@ -179,6 +198,29 @@ public sealed unsafe partial class GuestImageCache : IGuestImageCache, IGuestIma
         }
     }
 
+    private ResourceSlotIdentifier _insertedOverGpuImages = ResourceSlotIdentifier.Invalid;
+
+    // A new image over memory that GPU-written images of another shape hold starts from their contents:
+    // they move into the buffer first, and the new image is filled from it.
+    private void HandOverImagesToNewImage(ResourceSlotIdentifier imageIdentifier)
+    {
+        GuestSpan range;
+        using (var held = _lock.Hold())
+        {
+            range = _slots[imageIdentifier].Description.Data;
+        }
+
+        if (!PublishPartlyWrittenImages(range.Address, range.Size, wholeImages: true))
+        {
+            return;
+        }
+
+        using (var held = _lock.Hold())
+        {
+            _slots.TryGet(imageIdentifier)?.MarkBufferModified();
+        }
+    }
+
     private ResourceSlotIdentifier LookUpImage(ref ImageRequest request, bool exactFormat)
     {
         using var held = _lock.Hold();
@@ -196,6 +238,11 @@ public sealed unsafe partial class GuestImageCache : IGuestImageCache, IGuestIma
         if (ImageClearTrace.Enabled) ImageTraceRange.NoteImageLookup(request.Description.Data.Address, request.Description.Data.Size);
         PrintResourceHistory(request);
         var candidates = FindImagesInRange(request.Description.Data.Address, request.Description.Data.Size, pageOverlap: false);
+        if (ReleaseStaleDimensionTwins(candidates))
+        {
+            candidates = FindImagesInRange(request.Description.Data.Address, request.Description.Data.Size, pageOverlap: false);
+        }
+
         if (ImageClearTrace.Enabled && request.TraceTextureMetadataAddress != 0)
         {
             ImageClearTrace.Write($"texture-owner-search image=0x{request.Description.Data.Address:X16} candidates={candidates.Count}");
@@ -260,7 +307,14 @@ public sealed unsafe partial class GuestImageCache : IGuestImageCache, IGuestIma
                 var replacement = resolved.Description;
                 replacement.Type = request.View.Type is ImageViewType.Type1D or ImageViewType.Type1DArray
                     ? GuestImageType.Color1D : GuestImageType.Color2D;
-                result = GrowImage(replacement, result);
+                // A texture read both as 1D and as 2D keeps an image of each type while both hold the guest's contents.
+                // Replacing one with the other on every lookup recreated the image endlessly when both types were read.
+                result = request.Role == ImageRole.Texture && !resolved.IsGpuModified && !resolved.IsBufferModified &&
+                    !resolved.DimensionTwinStale
+                    ? FindDimensionTwin(candidates, resolved, request.View) is { IsValid: true } twin
+                        ? twin
+                        : InsertDimensionTwin(replacement, resolved)
+                    : GrowImage(replacement, result);
             }
             else if (request.View.Type == ImageViewType.Type3D && resolved.Backing.ImageType != ImageType.Type3D)
             {
@@ -281,7 +335,7 @@ public sealed unsafe partial class GuestImageCache : IGuestImageCache, IGuestIma
             if (exactMatch) _exactImageMatches++;
             else _overlapImageMatches++;
         }
-        if (!result.IsValid)
+        if (!result.IsValid && !TryUnparkImage(request.Description, out result))
         {
             if (RenderPhaseProfile.Enabled)
             {
@@ -313,6 +367,19 @@ public sealed unsafe partial class GuestImageCache : IGuestImageCache, IGuestIma
             {
                 inserted.MarkBufferModified();
             }
+
+            foreach (var candidate in candidates)
+            {
+                if (_slots.TryGet(candidate) is { IsGpuModified: true } overlapped &&
+                    overlapped.Description.Data.Address == inserted.Description.Data.Address &&
+                    (overlapped.Description.Extent.Width != inserted.Description.Extent.Width ||
+                     overlapped.Description.Extent.Height != inserted.Description.Extent.Height ||
+                     overlapped.Description.Pitch != inserted.Description.Pitch))
+                {
+                    _insertedOverGpuImages = result;
+                    break;
+                }
+            }
         }
 
         var image = _slots[result];
@@ -340,6 +407,11 @@ public sealed unsafe partial class GuestImageCache : IGuestImageCache, IGuestIma
     // Uploads guest changes of an image that was found earlier.
     public void RefreshImage(ResourceSlotIdentifier imageIdentifier)
     {
+        if (SubmissionScheduler.ReadOnlyThread)
+        {
+            throw SubmissionScheduler.ReadOnlyViolation("image refresh");
+        }
+
         using var held = _lock.Hold();
         var image = _slots[imageIdentifier];
         TouchImage(image);
@@ -349,7 +421,7 @@ public sealed unsafe partial class GuestImageCache : IGuestImageCache, IGuestIma
     // The image behind a slot without touching its recency; false once the slot was erased.
     public bool TryGetImage(ResourceSlotIdentifier imageIdentifier, out CachedImage image)
     {
-        using var held = _lock.Hold();
+        using var held = _lock.Read();
         var found = _slots.TryGet(imageIdentifier);
         image = found!;
         return found != null;
@@ -364,6 +436,11 @@ public sealed unsafe partial class GuestImageCache : IGuestImageCache, IGuestIma
 
     public ImageView AcquireTextureView(ResourceSlotIdentifier imageIdentifier, in ImageRequest request)
     {
+        if (SubmissionScheduler.ReadOnlyThread)
+        {
+            throw SubmissionScheduler.ReadOnlyViolation("texture view");
+        }
+
         using var profileScope = RenderPhaseProfile.MeasureDetail(RenderPhaseProfile.Phase.ImageAcquire);
         using var held = _lock.Hold();
         var image = _slots[imageIdentifier];
@@ -374,14 +451,22 @@ public sealed unsafe partial class GuestImageCache : IGuestImageCache, IGuestIma
             throw SubmissionScheduler.Fatal($"A texture must be found again before its view is acquired: address=0x{image.Description.Data.Address:X16} registered={image.Registered} proxy={image.DepthOwner.IsValid} rebind={image.Binding.NeedsRebind}.");
         }
 
+        AcquireTextureCore(imageIdentifier, image, in request);
+        return image.GetOrCreateView(request.View);
+    }
+
+    private void AcquireTextureCore(ResourceSlotIdentifier imageIdentifier, CachedImage image, in ImageRequest request)
+    {
+        var hasData = !ImageDescription.IsEmptyRange(image.Description.Data);
         if (request.Role == ImageRole.StorageImage)
         {
             image.MarkGpuModified();
         }
 
+        var cpuWritten = false;
         if (hasData)
         {
-            RefreshFromGuest(imageIdentifier, request);
+            cpuWritten = RefreshFromGuest(imageIdentifier, request);
             MergeMipTailBlock(image);
         }
 
@@ -400,18 +485,22 @@ public sealed unsafe partial class GuestImageCache : IGuestImageCache, IGuestIma
                     TakeGpuOwnership(image);
                 }
 
-                ScheduleReadback(imageIdentifier, image);
+                ScheduleReadbackAfterCpuWrite(imageIdentifier, image, cpuWritten);
                 break;
             default:
                 throw SubmissionScheduler.Fatal($"The texture role is invalid: role={request.Role}.");
         }
 
         TraceVolumeState("acquire", image, request);
-        return image.GetOrCreateView(request.View);
     }
 
     public ImageView AcquireColorTargetView(ResourceSlotIdentifier imageIdentifier, in ImageRequest request)
     {
+        if (SubmissionScheduler.ReadOnlyThread)
+        {
+            throw SubmissionScheduler.ReadOnlyViolation("color target view");
+        }
+
         if (MeshDrawTrace.Active) MeshDrawTrace.Range("color-acquire", request.Description.Data.Address, request.Description.Data.Size, $"view={request.View}", remember: true);
         using var profileScope = RenderPhaseProfile.MeasureDetail(RenderPhaseProfile.Phase.ImageAcquire);
         if (request.Role != ImageRole.ColorTarget)
@@ -427,10 +516,16 @@ public sealed unsafe partial class GuestImageCache : IGuestImageCache, IGuestIma
         }
 
         TouchImage(image);
+        AcquireColorTargetCore(imageIdentifier, image, in request);
+        return image.GetOrCreateView(request.View);
+    }
+
+    private void AcquireColorTargetCore(ResourceSlotIdentifier imageIdentifier, CachedImage image, in ImageRequest request)
+    {
         image.MarkGpuModified();
         image.Uses.RenderTarget = true;
         TraceVolumeState("color-acquire", image, request);
-        RefreshFromGuest(imageIdentifier, request);
+        var cpuWritten = RefreshFromGuest(imageIdentifier, request);
         TraceMetadataBinding(request);
         if (request.Description.Metadata.Kind == MetadataKind.Dcc && request.Description.Metadata.Range.Size == 0)
         {
@@ -442,10 +537,12 @@ public sealed unsafe partial class GuestImageCache : IGuestImageCache, IGuestIma
             {
                 metadata = new SurfaceMetadata { Kind = SurfaceMetadataKind.Dcc };
                 _surfaceMetadata[address] = metadata;
+                NoteMetadataChange(address);
             }
             else if (metadata.Kind == SurfaceMetadataKind.PendingDcc)
             {
                 metadata.Kind = SurfaceMetadataKind.Dcc;
+                NoteMetadataChange(address);
             }
             else if (metadata.Kind != SurfaceMetadataKind.Dcc)
             {
@@ -460,12 +557,16 @@ public sealed unsafe partial class GuestImageCache : IGuestImageCache, IGuestIma
         }
 
         TakeGpuOwnership(image);
-        ScheduleReadback(imageIdentifier, image);
-        return image.GetOrCreateView(request.View);
+        ScheduleReadbackAfterCpuWrite(imageIdentifier, image, cpuWritten);
     }
 
     public ImageView AcquireDepthTargetView(ResourceSlotIdentifier imageIdentifier, in ImageRequest request)
     {
+        if (SubmissionScheduler.ReadOnlyThread)
+        {
+            throw SubmissionScheduler.ReadOnlyViolation("depth target view");
+        }
+
         if (MeshDrawTrace.Active) MeshDrawTrace.Range("depth-acquire", request.Description.Data.Address, request.Description.Data.Size, $"view={request.View}", remember: true);
         using var profileScope = RenderPhaseProfile.MeasureDetail(RenderPhaseProfile.Phase.ImageAcquire);
         if (request.Role != ImageRole.DepthTarget)
@@ -481,6 +582,12 @@ public sealed unsafe partial class GuestImageCache : IGuestImageCache, IGuestIma
         }
 
         TouchImage(image);
+        AcquireDepthTargetCore(imageIdentifier, image, in request);
+        return image.GetOrCreateView(request.View);
+    }
+
+    private void AcquireDepthTargetCore(ResourceSlotIdentifier imageIdentifier, CachedImage image, in ImageRequest request)
+    {
         image.MarkGpuModified();
         image.Uses.DepthTarget = true;
         TraceVolumeState("depth-acquire", image, request);
@@ -495,11 +602,13 @@ public sealed unsafe partial class GuestImageCache : IGuestImageCache, IGuestIma
             {
                 metadata = new SurfaceMetadata { Kind = SurfaceMetadataKind.HTile, ClearMask = image.Description.HtileClearMask };
                 _surfaceMetadata.Add(address, metadata);
+                NoteMetadataChange(address);
             }
             else if (metadata.Invalidated && metadata.Kind == SurfaceMetadataKind.HTile)
             {
                 metadata = new SurfaceMetadata { Kind = SurfaceMetadataKind.HTile };
                 _surfaceMetadata[address] = metadata;
+                NoteMetadataChange(address);
             }
             else if (metadata.Kind == SurfaceMetadataKind.PendingDcc)
             {
@@ -509,6 +618,7 @@ public sealed unsafe partial class GuestImageCache : IGuestImageCache, IGuestIma
                 metadata.ClearMask = image.Description.HtileClearMask;
                 metadata.FillValue = 0xffffffff;
                 metadata.FillSize = 0;
+                NoteMetadataChange(address);
             }
             else if (metadata.Kind != SurfaceMetadataKind.HTile)
             {
@@ -523,10 +633,10 @@ public sealed unsafe partial class GuestImageCache : IGuestImageCache, IGuestIma
         {
             image.Description.Stencil = StencilPlaneOfImage(image.Description, request.Description);
             RefreshStencilPlane(imageIdentifier, image, request.Description.Metadata.StencilCompressed);
+            TakeStencilOwnership(imageIdentifier, image);
         }
 
         TakeGpuOwnership(image);
-        return image.GetOrCreateView(request.View);
     }
 
     // GFX10 packs the mips smaller than half a swizzle block into one block at the start of the chain.
@@ -619,6 +729,11 @@ public sealed unsafe partial class GuestImageCache : IGuestImageCache, IGuestIma
 
     public void MarkGpuWritten(ResourceSlotIdentifier imageIdentifier)
     {
+        if (SubmissionScheduler.ReadOnlyThread)
+        {
+            throw SubmissionScheduler.ReadOnlyViolation("gpu written");
+        }
+
         using var held = _lock.Hold();
         var image = _slots[imageIdentifier];
         RecordResourceHistory("gpu-image-written", image.Description.Data.Address, image.Description.Data.Size,

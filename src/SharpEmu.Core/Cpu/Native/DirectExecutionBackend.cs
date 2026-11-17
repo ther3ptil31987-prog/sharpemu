@@ -151,7 +151,7 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 
 
 	// See CpuDispatcher: the 0x7FFx window is Windows-only; POSIX hosts
-	// (dyld shared cache, Rosetta 2 runtime) use 0x6FFx instead.
+	// use 0x6FFx instead.
 	private static readonly ulong GuestThreadStackBaseAddress = OperatingSystem.IsWindows() ? 0x7FFF_E000_0000UL : 0x6FFF_E000_0000UL;
 
 	private static readonly ulong GuestThreadTlsBaseAddress = OperatingSystem.IsWindows() ? 0x7FFE_0000_0000UL : 0x6FFE_0000_0000UL;
@@ -226,6 +226,9 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 	private readonly object _tlsPatchRangeGate = new();
 
 	private readonly HashSet<TlsPatchScanRange> _scannedTlsPatchRanges = [];
+
+	[ThreadStatic]
+	private static TlsPatchScanRange? _tlsWriteBatchRange;
 
 	private nint _tlsHandlerAddress;
 
@@ -637,7 +640,7 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 
 	// A guest pthread may block and resume hundreds of times per second. Creating
 	// a new host Thread for every resume is especially costly for audio workers
-	// and eventually floods macOS with short-lived FMOD threads. Keep one dormant
+	// and eventually floods the host with short-lived FMOD threads. Keep one dormant
 	// host executor per guest pthread and signal it for each runnable slice.
 	private sealed class GuestExecutionRunner : IDisposable
 	{
@@ -1271,7 +1274,6 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		_patchedEa020eLookupCall = false;
 		MarkExecutionProgress();
 		BindTlsBase(context);
-		RouteGuestAccessFaultsToSignals();
 		var previousGuestThreadScheduler = GuestThreadExecution.Scheduler;
 		GuestThreadExecution.Scheduler = this;
 		try
@@ -1321,7 +1323,6 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 	{
 		Console.Error.WriteLine($"[LOADER][INFO] Setting up {importStubs.Count} import stubs...");
 		ClearImportHandlerTrampolines();
-		ConfigureGuestFastPath();
 		_importEntries = new ImportStubEntry[importStubs.Count];
 		HashSet<ulong> hashSet = new HashSet<ulong>(importStubs.Keys);
 		int num = 0;
@@ -1388,10 +1389,6 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 				LastError = "Failed to create import trampoline for NID " + text2;
 				return false;
 			}
-			if (TryCreateGuestFastPathStub(text2, num5, out var fastPathStub))
-			{
-				num5 = fastPathStub;
-			}
 			if (_logAllImports)
 			{
 				Console.Error.WriteLine($"[LOADER][DEBUG] SetupImportStubs: Trampoline for {text2} -> 0x{num5:X16}");
@@ -1404,7 +1401,7 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 			num2++;
 			num++;
 		}
-		Console.Error.WriteLine($"[LOADER][INFO] Setup {num2}/{importStubs.Count} import stubs (direct bridge, lle_redirects={num3}, fast_path_stubs={_guestFastPathStubCount})");
+		Console.Error.WriteLine($"[LOADER][INFO] Setup {num2}/{importStubs.Count} import stubs (direct bridge, lle_redirects={num3})");
 		return num2 == importStubs.Count;
 	}
 
@@ -1488,11 +1485,6 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 
 				var importIndex = currentEntries.Length + i;
 				var trampoline = CreateImportHandlerTrampoline(importIndex);
-				if (trampoline != 0 &&
-					TryCreateGuestFastPathStub(nid, trampoline, out var runtimeFastPathStub))
-				{
-					trampoline = runtimeFastPathStub;
-				}
 				if (trampoline == 0 || !PatchImportStub((nint)(long)address, trampoline))
 				{
 					error = $"failed to install runtime import trampoline at 0x{address:X16}";
@@ -1671,6 +1663,11 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 				0x48, 0x83, 0xC7, 0x02,
 				0x48, 0x83, 0xC6, 0x02,
 				0xEB, 0xE7,
+				// Match HLE's -1/0/1 ordering; some guests test for exactly 1.
+				0x85, 0xC0,                   // test eax,eax
+				0x0F, 0x9F, 0xC1,             // setg cl
+				0xC1, 0xF8, 0x1F,             // sar eax,31
+				0x08, 0xC8,                   // or al,cl
 				0xC3,
 			],
 			"E8wCoUEbfzk" =>
@@ -1688,6 +1685,10 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 				0x48, 0x83, 0xC6, 0x02,
 				0x48, 0xFF, 0xCA,
 				0x75, 0xE4,
+				0x85, 0xC0,                   // test eax,eax
+				0x0F, 0x9F, 0xC1,             // setg cl
+				0xC1, 0xF8, 0x1F,             // sar eax,31
+				0x08, 0xC8,                   // or al,cl
 				0xC3,
 			],
 			"kiZSXIWd9vg" =>
@@ -3501,6 +3502,45 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 
 	private unsafe TlsPatchCounts PatchTlsPatternsInRange(ulong rangeStart, ulong rangeEnd)
 	{
+		lock (ImportStubPatchGate)
+		{
+			var protections = new List<(ulong Start, ulong Size, uint Protection)>();
+			var previousBatch = _tlsWriteBatchRange;
+			try
+			{
+				var allWritable = true;
+				var cursor = rangeStart;
+				while (cursor < rangeEnd)
+				{
+					if (TryGetExecutableRegionEnd(cursor, rangeEnd, out var regionEnd))
+					{
+						uint previousProtection = 0;
+						if (VirtualProtect((void*)cursor, (nuint)(regionEnd - cursor), PAGE_EXECUTE_READWRITE, &previousProtection))
+							protections.Add((cursor, regionEnd - cursor, previousProtection));
+						else
+							allWritable = false;
+					}
+					cursor = regionEnd;
+				}
+
+				_tlsWriteBatchRange = allWritable ? new TlsPatchScanRange(rangeStart, rangeEnd) : null;
+				return ScanTlsPatternsInRange(rangeStart, rangeEnd);
+			}
+			finally
+			{
+				_tlsWriteBatchRange = previousBatch;
+				foreach (var (start, size, protection) in protections)
+				{
+					uint ignoredProtection = 0;
+					VirtualProtect((void*)start, (nuint)size, protection, &ignoredProtection);
+					FlushInstructionCache(GetCurrentProcess(), (void*)start, (nuint)size);
+				}
+			}
+		}
+	}
+
+	private unsafe TlsPatchCounts ScanTlsPatternsInRange(ulong rangeStart, ulong rangeEnd)
+	{
 		var cursor = rangeStart;
 		var counts = default(TlsPatchCounts);
 		while (cursor < rangeEnd)
@@ -3798,6 +3838,14 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		// otherwise race the unprotect/restore pair exactly like the import stubs.
 		lock (ImportStubPatchGate)
 		{
+			// The scan has already checked and unprotected every executable region it visits.
+			if (_tlsWriteBatchRange is { } batch && replacement.Length is >= 1 and <= 15 &&
+				(ulong)address >= batch.Start && (ulong)address < batch.End &&
+				(ulong)replacement.Length <= batch.End - (ulong)address)
+			{
+				replacement.CopyTo(new Span<byte>((void*)address, replacement.Length));
+				return true;
+			}
 			return WriteTlsInstructionLocked(address, replacement);
 		}
 	}
@@ -6291,12 +6339,9 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 			_activeGuestThreadYieldRequested = false;
 			_activeGuestThreadYieldReason = null;
 			BindTlsBase(context);
-			RouteGuestAccessFaultsToSignals();
 			byte* ptr2 = (byte*)ptr;
-			// Rosetta does not reliably permit a generated x86 thunk to write data
-			// in the same page from which it is currently executing, even when the
-			// mapping reports PAGE_EXECUTE_READWRITE. Keep mutable transition state
-			// in a separate writable allocation.
+			// Keep mutable transition state in a separate writable allocation so
+			// the generated thunk never writes to the page it is executing from.
 			ulong hostRspSlot = (ulong)hostRspStorage;
 			int offset = 0;
 			ptr2[offset++] = 83;
@@ -6518,7 +6563,6 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 			_activeGuestThreadYieldRequested = false;
 			_activeGuestThreadYieldReason = null;
 			BindTlsBase(context);
-			RouteGuestAccessFaultsToSignals();
 			byte* ptr2 = (byte*)ptr;
 			ulong hostRspSlot = (ulong)hostRspStorage;
 			var emitter = new NativeCodeEmitter(ptr2);
@@ -6792,7 +6836,6 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 			_activeGuestThreadYieldRequested = false;
 			_activeGuestThreadYieldReason = null;
 			BindTlsBase(context);
-			RouteGuestAccessFaultsToSignals();
 			byte* ptr2 = (byte*)ptr;
 			ulong num2 = (ulong)hostRspStorage;
 			int num3 = 0;

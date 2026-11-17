@@ -141,17 +141,14 @@ public sealed partial class GpuCommandInterpreter
         }
 
         var count = packet.Length - 2;
-        for (var index = 0u; index < count; index++)
+        if (count > RegisterBankLayout.ShaderRegisterCount - offset)
         {
-            if (offset + index >= RegisterBankLayout.ShaderRegisterCount)
-            {
-                throw _host.Fatal($"The shader register range leaves the bank: offset=0x{offset:X8} count={count} address=0x{packet.PacketAddress:X16}.");
-            }
-
-            Registers.Shader[offset + index] = payload[1 + (int)index];
+            throw _host.Fatal($"The shader register range leaves the bank: offset=0x{offset:X8} count={count} address=0x{packet.PacketAddress:X16}.");
         }
 
-        return RegisterWriteTable.WriteShaderPacket(TypedRegisters, in packet, offset, payload.Slice(1, (int)count)) + 1;
+        var values = payload.Slice(1, (int)count);
+        Registers.Shader.SetRange(offset, values);
+        return RegisterWriteTable.WriteShaderPacket(TypedRegisters, in packet, offset, values) + 1;
     }
 
     internal uint SetUserConfigRegisterPacket(in PacketContext packet, ReadOnlySpan<uint> payload)
@@ -238,6 +235,11 @@ public sealed partial class GpuCommandInterpreter
 
         Span<byte> tableBlock = stackalloc byte[entriesPerBlock * entryBytes];
         Span<byte> beforeSynchronization = stackalloc byte[entriesPerBlock * entryBytes];
+        var gpuWritten = !_submittedCommands.IsEmpty && _host.HasGpuWrittenCommandData(tableAddress, (ulong)count * entryBytes);
+        byte[]? retained = null;
+        if (_submittedRegisterTables is { } tables && tables.TryGetValue(packet.PacketAddress, out var submitted) &&
+            (ulong)submitted.Length == (ulong)count * entryBytes && !gpuWritten)
+            retained = submitted;
         for (var index = 0u; index < count; index++)
         {
             var blockEntry = (int)(index % entriesPerBlock);
@@ -248,7 +250,13 @@ public sealed partial class GpuCommandInterpreter
                 RenderPhaseProfile.RecordCommandRead(RenderPhaseProfile.CommandReadKind.RegisterTable, blockBytes);
                 var capturedBeforeSynchronization = TraceRegisterTables &&
                     _host.Memory.TryRead(blockAddress, beforeSynchronization[..blockBytes]);
-                if (!_host.TryReadGuest(blockAddress, tableBlock[..blockBytes]))
+                if (retained is not null)
+                {
+                    retained.AsSpan((int)index * entryBytes, blockBytes).CopyTo(tableBlock);
+                }
+                else if (!(gpuWritten
+                    ? _host.TryReadGuest(blockAddress, tableBlock[..blockBytes])
+                    : TryReadCommand(blockAddress, tableBlock[..blockBytes])))
                 {
                     throw _host.Fatal($"The register table cannot be read: address=0x{blockAddress:X16} size={blockBytes}.");
                 }

@@ -7,6 +7,8 @@ namespace SharpEmu.Libs.Gpu.GpuCommands;
 
 public sealed partial class GpuCommandInterpreter
 {
+    internal static long RelaxedWaitHits;
+    internal static long RelaxedWaitFallbacks;
     private const uint RewindValidBit = 1u << 31;
     private const uint RewindKnownBits = 0x8100_0000u;
 
@@ -28,27 +30,122 @@ public sealed partial class GpuCommandInterpreter
             return;
         }
 
+        // SHARPEMU_END_OF_PIPE_SOFT_WAITS: this packet's wait already passed on an earlier try. Only its advisory delay
+        // resumes: the label is not read or compared again, so a later change of the label cannot undo the pass.
+        if (_softWait is { } soft)
+        {
+            if (soft.Is(_execution, _packetAddress))
+            {
+                ResumeSoftWait(soft);
+                return;
+            }
+
+            EndSoftWait();
+        }
+
         // A deferred label is visible here at once; guest CPU threads see it after the dump before it.
         if (!_host.TryReadDeferredLabel(QueueId, address, is64Bit ? 8UL : 4UL, out var deferred, out var value))
         {
             Suspend();
             return;
         }
-        if (!deferred) value = ReadWaitOperand(address, is64Bit);
+        var stale = false;
+        if (!deferred) value = ReadWaitOperand(address, is64Bit, allowStale: true, out stale);
         if (!WaitOperation.TryCompare(value, reference, mask, compareFunction, out var satisfied))
         {
             throw _host.Fatal($"The wait compare function is unknown: function={compareFunction} address=0x{address:X16}.");
         }
 
+        if (stale)
+        {
+            if (satisfied)
+            {
+                Interlocked.Increment(ref RelaxedWaitHits);
+            }
+            else
+            {
+                Interlocked.Increment(ref RelaxedWaitFallbacks);
+                value = ReadWaitOperand(address, is64Bit, allowStale: false, out _);
+                _ = WaitOperation.TryCompare(value, reference, mask, compareFunction, out satisfied);
+            }
+        }
+
         if (!satisfied && TryReadOwnWrite(address, is64Bit, out var ownValue))
         {
             _ = WaitOperation.TryCompare(ownValue, reference, mask, compareFunction, out satisfied);
+            if (satisfied)
+            {
+                return;
+            }
         }
 
         if (!satisfied)
         {
             Suspend();
+            return;
         }
+
+        // Met by the label bytes in guest memory, not a deferred label or this queue's own write.
+        if (!deferred && Landings is { } landings && _execution is { } execution &&
+            landings.Admit(QueueId, address, is64Bit ? 8 : 4, compareFunction, reference, mask, value, CompletedGpuTick) is { } landing)
+        {
+            ResumeSoftWait(new SoftWait(execution, execution.Depth, _packetAddress, landing, System.Diagnostics.Stopwatch.GetTimestamp()));
+        }
+    }
+
+    // SHARPEMU_END_OF_PIPE_SOFT_WAITS: the wait of this packet passed, on a label another queue's release wrote, but the
+    // work in front of that release has not completed on the GPU. While another queue's head may run, the packet suspends
+    // as an unmet wait does and runs again later, resuming only this delay; the wait then passes once that work completed,
+    // once no other head may run, or at the deadline counted from the first suspension. A release
+    // is used by one soft wait once.
+    private void ResumeSoftWait(SoftWait soft)
+    {
+        var elapsed = System.Diagnostics.Stopwatch.GetTimestamp() - soft.Since;
+        var landings = Landings;
+        EndOfPipeLandings.Release? release =
+            landings is null ? EndOfPipeLandings.Release.Off
+            : soft.Landing.IsComplete(CompletedGpuTick) ? EndOfPipeLandings.Release.Complete
+            : elapsed >= landings.CapTicks ? EndOfPipeLandings.Release.Cap
+            : !MayDeferForLanding ? EndOfPipeLandings.Release.Idle
+            : null;
+        if (release is { } reason)
+        {
+            soft.Landing.ReleasedBy = reason;
+            soft.Landing.Consume();
+            _softWait = null;
+            return;
+        }
+
+        _softWait = soft;
+        _suspendedForLanding = true;
+        Suspend();
+    }
+
+    // Ends a soft wait that no longer belongs to the packet running now (its submission was dropped or the queue reset).
+    private void EndSoftWait()
+    {
+        if (_softWait is not { } soft)
+        {
+            return;
+        }
+
+        soft.Landing.Consume();
+        _softWait = null;
+        _suspendedForLanding = false;
+    }
+
+    // The packet a soft wait suspended: its submission's cursor stack, the depth and the packet address. Only the retry of
+    // that packet resumes it; any other packet ends it.
+    private sealed class SoftWait(PacketCursorStack execution, int depth, ulong packetAddress, EndOfPipeLanding landing, long since)
+    {
+        internal PacketCursorStack Execution { get; } = execution;
+
+        internal EndOfPipeLanding Landing { get; } = landing;
+
+        internal long Since { get; } = since;
+
+        internal bool Is(PacketCursorStack? current, ulong currentPacket) =>
+            ReferenceEquals(Execution, current) && current!.Depth == depth && currentPacket == packetAddress;
     }
 
     // The wait bit is PredicationZPassWaitOp: 0 (kWaitForQueryResults) stalls the command
@@ -61,6 +158,7 @@ public sealed partial class GpuCommandInterpreter
             case 0:
                 // Clearing predication reads no memory, so no GPU result can be outstanding.
                 PredicateSkip = false;
+                Interlocked.Increment(ref _predicationClears);
                 break;
             case 3:
             {
@@ -74,9 +172,11 @@ public sealed partial class GpuCommandInterpreter
                     // The results are outstanding while work is queued behind this packet, and
                     // the game asked for the packets to run unpredicated in that case.
                     PredicateSkip = false;
+                    Interlocked.Increment(ref _predicationBoolUnpredicated);
                     break;
                 }
 
+                Interlocked.Increment(ref _predicationBoolWaiting);
                 _host.FlushAndWait();
                 var value = ReadQword(address);
                 PredicateSkip = condition switch
@@ -168,6 +268,7 @@ public sealed partial class GpuCommandInterpreter
 
     private uint WaitRegisterMemoryPacket(in PacketContext packet, ReadOnlySpan<uint> payload, bool is64Bit)
     {
+        Diagnostics.DispatchRunTally.NoteWait();
         var valueDwords = is64Bit ? 2u : 1u;
         var payloadDwords = 4u + (valueDwords * 2u);
         var opcode = is64Bit ? PacketOpcode.WaitRegisterMemory64 : PacketOpcode.WaitRegisterMemory;

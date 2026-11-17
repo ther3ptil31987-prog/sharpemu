@@ -30,12 +30,18 @@ internal static unsafe partial class VulkanVideoPresenter
 
     private sealed partial class Presenter
     {
-        private LodStatisticsRecorder? _lodStatistics;
+        internal LodStatisticsRecorder? _lodStatistics;
 
-        private LodStatisticsRecorder LodStatistics() =>
+        internal LodStatisticsRecorder LodStatistics() =>
             _lodStatistics ??= new LodStatisticsRecorder(_deviceInfo, _scheduler);
 
         bool Gpu.Pipelines.IShaderPipelineHost.MipStatisticsSubgroupReduction => FragmentSubgroupArithmetic && GraphicsSubgroupOperationsEnabled;
+
+        bool Gpu.Pipelines.IShaderPipelineHost.PixelSubgroupArithmetic =>
+            VulkanGraphicsSubgroupPolicy.ShouldUsePixelSubgroupArithmetic(
+                unchecked((uint)Volatile.Read(ref _nativeSubgroupSize)),
+                GraphicsSubgroupOperationsEnabled,
+                FragmentSubgroupArithmetic);
 
         bool Gpu.GpuCommands.ICommandStreamHost.TryRecordLodStatistics(ulong destination, uint size)
         {
@@ -46,7 +52,7 @@ internal static unsafe partial class VulkanVideoPresenter
                     return false;
                 }
 
-                _commandThread!.PostRange(() => WriteBindingLodStatistics(destination, size), destination, size);
+                _commandThread!.PostRange(() => WriteBindingLodStatistics(destination, size), destination, size, CommandThread.RangeKind.Lod);
                 return true;
             }
 
@@ -57,7 +63,7 @@ internal static unsafe partial class VulkanVideoPresenter
 
             if (OnCommandThread)
             {
-                _commandThread!.Post(() => RecordLodStatistics(destination, size));
+                _commandThread!.PostRange(() => RecordLodStatistics(destination, size), destination, size, CommandThread.RangeKind.Lod);
                 return true;
             }
 
@@ -67,9 +73,8 @@ internal static unsafe partial class VulkanVideoPresenter
 
         private void RecordLodStatistics(ulong destination, uint size)
         {
-            DrainDraws();
-            EndRendering();
-            _ = BeginBatchedGuestCommands();
+            Recording.EndRendering();
+            EnsureBatchedGuestCommands();
             LodStatistics().Record(destination, size);
         }
 
@@ -99,19 +104,20 @@ internal static unsafe partial class VulkanVideoPresenter
             }
         }
 
-        private void WriteMipStatisticsFields(uint[] shaderData, BindingLayout layout, ShaderResourceInfo info, uint[][] images)
+        internal void WriteMipStatisticsFields(uint[] shaderData, BindingLayout layout, ShaderResourceInfo info, uint[][] images, uint[]? statistics)
         {
             for (var index = 0; index < layout.MipStatisticsCount; index++)
             {
                 var image = index < info.Images.Count ? info.Images[index] : null;
                 var words = index < images.Length ? images[index] : null;
+                var current = statistics is not null && index < statistics.Length ? statistics[index] : ResourceSnapshot.NoMipStatistics;
                 shaderData[layout.MipStatisticsDword + (uint)index] = image is { MipStatistics: true } && words is { Length: >= 8 }
-                    ? MipStatistics.ImageField(words)
+                    ? MipStatistics.ImageField(words, current)
                     : MipStatistics.NoCounterField;
             }
         }
 
-        private DescriptorBufferInfo MipStatisticsDescriptor()
+        internal DescriptorBufferInfo MipStatisticsDescriptor()
         {
             var counters = LodStatistics().Counters;
             return new DescriptorBufferInfo { Buffer = counters.Handle, Offset = 0, Range = counters.Size };

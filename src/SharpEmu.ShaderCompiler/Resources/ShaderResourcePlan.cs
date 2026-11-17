@@ -6,6 +6,10 @@ using System.Linq;
 
 namespace SharpEmu.ShaderCompiler.Resources;
 
+// Converts a frontend's descriptor to the common buffer layout without changing guest memory.
+public delegate uint[] BufferDescriptorNormalizer(ReadOnlySpan<uint> words);
+public delegate uint[] ImageDescriptorNormalizer(ReadOnlySpan<uint> words, ShaderStage stage, ulong shaderHash, string source);
+
 // An image access whose descriptor comes from a material-table key: the emitter reads
 // the key and selects the heap candidate at run time.
 public sealed record IndirectImageAccess(int MemoryIndex, ScalarValue Key, uint HeapSource)
@@ -15,7 +19,7 @@ public sealed record IndirectImageAccess(int MemoryIndex, ScalarValue Key, uint 
 
 // The immutable resource analysis of one program: graph, descriptor sources, flattened
 // reads and dense tables. Built once, materialised per draw, free of any draw's user data.
-public sealed class ShaderResourcePlan
+public sealed partial class ShaderResourcePlan
 {
     private ShaderResourcePlan(ScalarValueGraph graph, ShaderStage stage, ulong hash)
     {
@@ -25,6 +29,9 @@ public sealed class ShaderResourcePlan
     }
 
     public ScalarValueGraph Graph { get; }
+    public BufferDescriptorNormalizer? NormalizeBufferDescriptor { get; private init; }
+    public ImageDescriptorNormalizer? NormalizeImageDescriptor { get; private init; }
+    public Func<long>? ImageNormalizationVersion { get; private init; }
     public ShaderStage Stage { get; }
     public ulong Hash { get; }
 
@@ -38,6 +45,10 @@ public sealed class ShaderResourcePlan
     public IReadOnlyList<DescriptorSource> DescriptorSources { get; private set; } = [];
     public IReadOnlyList<uint> MaterializationSources { get; private set; } = [];
     public IReadOnlyList<ResourceBranchBlock> ResourceBranches { get; private set; } = [];
+    // Whether a plan with ResourceBranches writes memory, and the static buffers it writes through, which may be none
+    // when it writes only LDS or scratch (ResourceBranchWriteGuard).
+    public bool ResourceBranchesWithWrites { get; private set; }
+    public IReadOnlyList<uint> ResourceBranchWrites { get; private set; } = [];
     public IReadOnlyList<ResourceTableRead> TableReads { get; private set; } = [];
     public IReadOnlyDictionary<int, uint> FlattenedSlotByMemoryIndex { get; private set; } = new Dictionary<int, uint>();
     public IReadOnlyList<ScalarValue> DynamicReads { get; private set; } = [];
@@ -47,13 +58,36 @@ public sealed class ShaderResourcePlan
     public bool RequiresSpecializationMemory { get; private set; }
     public ShaderResourceInfo Info { get; private set; } = new();
 
+    public bool StableImageBindings { get; private set; }
+
     internal RawReadPrefetchPlan? RawReadPrefetch { get; set; }
     private readonly object _compileGate = new();
     private CompiledResourceEvaluator? _compiledEvaluator;
     private CompiledResourceTransaction? _compiledTransaction;
     private CompiledResourceTransaction? _compiledTableTransaction;
+    private CompiledBranchTransaction? _compiledBranches;
     internal ResourceMaterializer.SpecializationGuard? SpecializationGuard;
     private int _compiledEvaluatorState;
+
+    private sealed record ProgramBox(MaterializationProgram? Program, string Ineligibility);
+
+    private ProgramBox? _materializationProgram;
+
+    internal MaterializationProgram? MaterializationProgram =>
+        (Volatile.Read(ref _materializationProgram) ?? InitializeMaterializationProgram()).Program;
+
+    internal string MaterializationProgramIneligibility =>
+        (Volatile.Read(ref _materializationProgram) ?? InitializeMaterializationProgram()).Ineligibility;
+
+    private ProgramBox InitializeMaterializationProgram()
+    {
+        var program = Resources.MaterializationProgram.Build(this, out var reason);
+        var built = new ProgramBox(program, reason);
+        return Interlocked.CompareExchange(ref _materializationProgram, built, null) ?? built;
+    }
+
+    internal object?[]? SpecializationMemos;
+    internal int NextSpecializationMemo;
 
     internal CompiledResourceEvaluator? CompiledEvaluator
     {
@@ -70,6 +104,7 @@ public sealed class ShaderResourcePlan
         lock (_compileGate)
         {
             if (Volatile.Read(ref _compiledEvaluatorState) == 2) return _compiledEvaluator;
+            CompileRangesNow();
             CompiledResourceEvaluator? compiled;
             try
             {
@@ -98,6 +133,15 @@ public sealed class ShaderResourcePlan
                 _compiledTableTransaction = null;
             }
 
+            try
+            {
+                _compiledBranches = CompiledBranchTransaction.Build(this);
+            }
+            catch (Exception exception) when (exception is not OutOfMemoryException)
+            {
+                _compiledBranches = null;
+            }
+
             _compiledEvaluator = compiled;
             Volatile.Write(ref _compiledEvaluatorState, 2);
             return compiled;
@@ -122,8 +166,23 @@ public sealed class ShaderResourcePlan
         }
     }
 
+    // The compiled form of a branch plan's selected sources (CompiledBranchTransaction); null for other plans and
+    // until the SRT compiler has built it.
+    internal CompiledBranchTransaction? CompiledBranches
+    {
+        get
+        {
+            _ = CompiledEvaluator;
+            return Volatile.Read(ref _compiledEvaluatorState) == 2 ? _compiledBranches : null;
+        }
+    }
+
     // The handles each memory access reads, after flattened reads were replaced.
     public MemoryAccessBinding?[] Accesses { get; private set; } = [];
+
+    // The image accesses whose image or sampler is a bindless heap record, and the heap V#s they read.
+    public IReadOnlyList<HeapRecordAccess> HeapRecords { get; private set; } = [];
+    public IReadOnlyList<HeapRecordSource> HeapRecordSources { get; private set; } = [];
 
     // The image accesses whose image or sampler a linked callee's call record holds, and what each callee reads through its
     // records' arguments besides them (by its slot among the program's call targets; empty unless linked with run-time
@@ -136,15 +195,28 @@ public sealed class ShaderResourcePlan
     public IReadOnlyDictionary<uint, (ScalarValue Low, ScalarValue High)> CallRecordArguments { get; private set; } =
         new Dictionary<uint, (ScalarValue Low, ScalarValue High)>();
 
+    // The accesses whose bindless image or sampler descriptor reads as null.
+    public IReadOnlyList<uint> NullBindlessDescriptorPcs { get; private set; } = [];
+
     public static ShaderResourcePlan Extract(Gen5ShaderProgram program, ShaderStage stage, ulong hash, uint userDataBase, uint userDataCount,
         IReadOnlySet<uint>? fixedFunctionVertexLoads = null, Action<ShaderResourcePlan>? beforeResourceTracking = null, uint waveSize = 64,
-        bool callRecords = false, bool callMarks = false)
+        bool bindlessNullDescriptors = false, bool bindlessHeap = false, bool callRecords = false, bool callMarks = false,
+        int dynamicUserData = -1, BufferDescriptorNormalizer? normalizeBufferDescriptor = null,
+        ImageDescriptorNormalizer? normalizeImageDescriptor = null, Func<long>? imageNormalizationVersion = null,
+        StableImageDescriptorLimits stableImageLimits = default, bool? scalarDataOnDevice = null,
+        bool? deviceRecordCounts = null, bool? runtimeImageSwizzles = null)
     {
         // Mesh system inputs are not uniform user data, even when a GS pointer occupies s0:s1.
         var graph = ScalarGraphDiskCache.Build(program, userDataBase, userDataCount, fixedFunctionVertexLoads, waveSize,
-            excludedUserDataRegisters: stage == ShaderStage.Mesh ? 0xFCUL : 0);
-        var plan = new ShaderResourcePlan(graph, stage, hash);
-        var reads = ResourceTableReadPlanner.Plan(graph, stage, hash);
+            excludedUserDataRegisters: stage == ShaderStage.Mesh ? 0xFCUL : 0, dynamicUserData: dynamicUserData);
+        var plan = new ShaderResourcePlan(graph, stage, hash)
+        {
+            NormalizeBufferDescriptor = normalizeBufferDescriptor,
+            NormalizeImageDescriptor = normalizeImageDescriptor,
+            ImageNormalizationVersion = imageNormalizationVersion,
+        };
+        plan.DeviceRecordCounts = (deviceRecordCounts ?? DeviceRecordCountPlan.Enabled) ? DeviceRecordCountPlan.Create(graph, stage) : null;
+        var reads = ResourceTableReadPlanner.Plan(graph, stage, hash, scalarDataOnDevice ?? ScalarDataReadPolicy.Enabled, plan.DeviceRecordCounts);
         var memo = new Dictionary<ScalarValue, ScalarValue>();
         ScalarValue Rewrite(ScalarValue value) => graph.Substitute(value, reads.Replacements, memo);
         ScalarValue RewriteRead(ScalarValue read)
@@ -181,16 +253,27 @@ public sealed class ShaderResourcePlan
 
         // Diagnostics observe rewritten values before descriptor validation.
         beforeResourceTracking?.Invoke(plan);
-        var tracked = ResourceTracker.Track(plan, callRecords);
+        var tracked = ResourceTracker.Track(plan, bindlessNullDescriptors, bindlessHeap, callRecords);
         plan.DescriptorSources = tracked.Sources;
         plan.Info = tracked.Info;
+        plan.NullBindlessDescriptorPcs = tracked.NullBindlessDescriptorPcs;
+        plan.HeapRecords = tracked.HeapRecords;
         plan.CallRecords = tracked.CallRecords;
+        plan.HeapRecordSources = tracked.HeapRecords
+            .Select(record => new HeapRecordSource(plan.DescriptorSources[(int)record.Source].Heap!.HeapSource, record.Sampler))
+            .Distinct()
+            .ToList();
         if (program.Instructions.Any(instruction => instruction.Control is ShaderCallFaultControl))
             plan.Info.UsesDeviceAddresses = true;
-        if (plan.Info.UsesDeviceAddresses && Gen5ShaderCallLinker.IsLinked(program))
+        // A program with shader calls, or a compute program with many device-address dwords (CompactMemoryAccessPolicy),
+        // reads device addresses without branches; an access it does not make reads the host's fallback address.
+        if (plan.Info.UsesDeviceAddresses &&
+            (Gen5ShaderCallLinker.IsLinked(program) || CompactMemoryAccessPolicy.Prefers(plan, stage)))
             plan.Info.UsesDeviceAddressFallback = true;
         if (callMarks && program.Instructions.Any(static instruction => instruction.Control is ShaderCallFaultControl { ReturnPc: not null }))
             plan.Info.UsesCallMarks = true;
+        // Storage image selects as shader data (RuntimeImageSwizzle, SHARPEMU_RUNTIME_IMAGE_SWIZZLE unless the caller says).
+        plan.Info.UsesRuntimeImageSwizzles = runtimeImageSwizzles ?? RuntimeImageSwizzle.Enabled;
         plan.IndirectImages = tracked.IndirectImages;
         plan.BufferCandidateTables = tracked.BufferCandidateTables;
         plan.DynamicReads = plan.DynamicReads.Where(read => !tracked.IndirectReads.Contains(read)).ToList();
@@ -248,8 +331,11 @@ public sealed class ShaderResourcePlan
 
         plan.CleanFlatSlots = cleanSlots;
         plan.ResourceBranches = ResourceBranchBlock.Build(plan, Rewrite);
-        plan.DeviceAddressRanges = DeviceAddressRangePlanner.Plan(plan);
+        plan.ResourceBranchesWithWrites = plan.ResourceBranches.Count != 0 && ResourceBranchBlock.Writes(plan);
+        plan.ResourceBranchWrites = plan.ResourceBranchesWithWrites ? ResourceBranchBlock.WrittenBuffers(plan) ?? [] : [];
+        plan.DeviceAddressRanges = DeviceAddressRangePlanner.Plan(plan, out var readsBounded);
         plan.CallRecordCallees = CallRecordPlanner.Plan(plan);
+        plan.DeviceAddressReadsBounded = readsBounded && plan.CallRecordCallees.Count == 0;
 
         // Each written handle owns three flattened slots after the table reads: base
         // low, base high and size, which the shader checks every store against.
@@ -263,13 +349,17 @@ public sealed class ShaderResourcePlan
         }
 
         plan.WrittenRangeSlotByHandle = writtenSlots;
+        plan.StableImageBindings = stableImageLimits.Fits(plan);
         return plan;
     }
 
     public const int WrittenRangeDwordCount = 3;
+    public DeviceRecordCountPlan? DeviceRecordCounts { get; private set; }
 
     // Planned after tracking; optional, and never a reason for the plan to fail.
     public IReadOnlyList<DeviceAddressRangePlan> DeviceAddressRanges { get; private set; } = [];
+
+    public bool DeviceAddressReadsBounded { get; private set; }
 
     public IReadOnlyDictionary<uint, uint> WrittenRangeSlotByHandle { get; private set; } = new Dictionary<uint, uint>();
 

@@ -17,17 +17,22 @@ namespace SharpEmu.Libs.Tests.Gpu.Vulkan;
 // adds the two bytes to its byte addresses (the buffer's byte bias).
 public sealed class BiasedStorageBufferDeviceTests(HeadlessVulkanFixture fixture) : IClassFixture<HeadlessVulkanFixture>
 {
+    // The view ends on a whole dword: the last partial one when the buffer holds it, else the one before it, which the
+    // shader's ArrayLength leaves out as well. Under four bytes there is no whole dword, and the view keeps its bytes.
     [Theory]
     [InlineData(6ul, 64ul, 8ul)]
     [InlineData(8ul, 64ul, 8ul)]
-    [InlineData(6ul, 7ul, 6ul)]
+    [InlineData(6ul, 7ul, 4ul)]
     [InlineData(5ul, 64ul, 8ul)]
+    [InlineData(2ul, 3ul, 2ul)]
     public void TheViewEndsOnADwordInsideTheBuffer(ulong bytes, ulong available, ulong expected) =>
         Assert.Equal(expected, VulkanVideoPresenter.StorageBufferViewRange(bytes, available, uint.MaxValue));
 
     // Two 16-bit elements at guest offsets 0 and 2: both are in range, the second in the view's last partial dword.
-    [Fact]
-    public void SixteenBitLoadsReadTheLastElementOfABiasedBinding()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void SixteenBitLoadsReadTheLastElementOfABiasedBinding(bool tableBlock)
     {
         var vulkan = fixture.Vulkan;
         if (!GatePrerequisites.Ready(vulkan)) return;
@@ -44,7 +49,7 @@ public sealed class BiasedStorageBufferDeviceTests(HeadlessVulkanFixture fixture
         BinaryPrimitives.WriteUInt16LittleEndian(input.AsSpan(4), 0x5678);
         var range = VulkanVideoPresenter.StorageBufferViewRange(4 + 2, (ulong)input.Length, uint.MaxValue);
 
-        var words = Run(program, input, range, recordBytes: 4);
+        var words = Run(program, input, range, recordBytes: 4, tableBlock);
 
         Assert.Equal(0x1234u, BinaryPrimitives.ReadUInt32LittleEndian(words));
         Assert.Equal(0x5678u, BinaryPrimitives.ReadUInt32LittleEndian(words.AsSpan(4)));
@@ -52,8 +57,10 @@ public sealed class BiasedStorageBufferDeviceTests(HeadlessVulkanFixture fixture
 
     // A scalar load ignores the two low bits of the base and of the offset (RDNA2 ISA 7), so with the base two bytes past
     // a dword, offsets 0 and 2 both read the dword that starts at the view, and offset 4 the next one.
-    [Fact]
-    public void ScalarLoadsIgnoreTheLowBitsOfTheBaseAndTheOffset()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ScalarLoadsIgnoreTheLowBitsOfTheBaseAndTheOffset(bool tableBlock)
     {
         var vulkan = fixture.Vulkan;
         if (!GatePrerequisites.Ready(vulkan)) return;
@@ -74,16 +81,17 @@ public sealed class BiasedStorageBufferDeviceTests(HeadlessVulkanFixture fixture
         BinaryPrimitives.WriteUInt32LittleEndian(input.AsSpan(4), 0x22222222);
         BinaryPrimitives.WriteUInt32LittleEndian(input.AsSpan(8), 0x33333333);
 
-        var words = Run(program, input, range: 16, recordBytes: 12);
+        var words = Run(program, input, range: 16, recordBytes: 12, tableBlock);
 
         Assert.Equal(0x11111111u, BinaryPrimitives.ReadUInt32LittleEndian(words));
         Assert.Equal(0x11111111u, BinaryPrimitives.ReadUInt32LittleEndian(words.AsSpan(4)));
         Assert.Equal(0x22222222u, BinaryPrimitives.ReadUInt32LittleEndian(words.AsSpan(8)));
     }
 
-    private byte[] Run(Gen5ShaderProgram program, byte[] input, ulong range, uint recordBytes)
+    private byte[] Run(Gen5ShaderProgram program, byte[] input, ulong range, uint recordBytes, bool tableBlock)
     {
-        var (plan, resources, layout) = Prepare(program);
+        var (plan, resources, layout) = Prepare(program, tableBlock: tableBlock);
+        Assert.Equal(tableBlock, layout.UsesTableBlock);
         var request = new ShaderCompileRequest(plan, resources, layout) { LocalSizeX = 32, ThreadCountX = 32, WaveSize = 32 };
         Assert.True(Gen5SpirvTranslator.TryCompileProgram(request, out var shader, out var error), error);
         using var harness = new ImageTestHarness(fixture.Vulkan!);

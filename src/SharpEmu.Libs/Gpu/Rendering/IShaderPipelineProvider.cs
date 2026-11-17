@@ -23,11 +23,23 @@ public readonly record struct VertexPositionStream(ulong Address, uint Stride, u
 
 public sealed class GraphicsPrograms
 {
+    public TessellationDrawPrograms? Tessellation { get; init; }
+    public GraphicsPrograms()
+        : this(new VertexInputInfo(), new PixelInputInfo())
+    {
+    }
+
+    public GraphicsPrograms(VertexInputInfo vertexInput, PixelInputInfo pixelInput)
+    {
+        VertexInput = vertexInput;
+        PixelInput = pixelInput;
+    }
+
     public ShaderProgram Vertex { get; init; }
     public ShaderProgram Pixel { get; init; }
-    public VertexInputInfo VertexInput { get; init; } = new();
+    public VertexInputInfo VertexInput { get; init; }
     public MeshDrawConfiguration? MeshInput { get; init; }
-    public PixelInputInfo PixelInput { get; init; } = new();
+    public PixelInputInfo PixelInput { get; init; }
 
     // False when the provider could not build the programs; the executor skips the draw.
     public bool Available { get; init; } = true;
@@ -44,8 +56,70 @@ public sealed class GraphicsPrograms
     public bool DropUnwrittenColorTargets { get; init; }
 }
 
+public sealed record TessellationDrawPrograms(SharpEmu.ShaderCompiler.Gen5TessellationInfo Configuration,
+    SharpEmu.ShaderCompiler.Gen5TessellationHullInfo HullConfiguration, ComputeProgram Hull);
+// Learns when a known write of one producer is read.
+internal interface IKnownWriteDemand
+{
+    void NoteRead();
+}
+
+public sealed class KnownGpuWrite(ulong address, uint[] buffer, int count, bool pooled = false)
+{
+    private readonly object _gate = new();
+    private bool _released;
+    private int _read;
+
+    internal IKnownWriteDemand? Demand { get; init; }
+
+    public ulong Address { get; } = address;
+
+    internal void NoteRead()
+    {
+        if (Demand is { } demand && Interlocked.Exchange(ref _read, 1) == 0)
+        {
+            demand.NoteRead();
+        }
+    }
+
+    public int ByteCount => count * sizeof(uint);
+
+    public ReadOnlySpan<uint> Words => buffer.AsSpan(0, count);
+
+    public bool TryCopyWords(int offsetBytes, Span<byte> destination)
+    {
+        lock (_gate)
+        {
+            if (_released)
+            {
+                return false;
+            }
+
+            System.Runtime.InteropServices.MemoryMarshal.AsBytes(buffer.AsSpan(0, count)).Slice(offsetBytes, destination.Length).CopyTo(destination);
+            return true;
+        }
+    }
+
+    public void Release()
+    {
+        lock (_gate)
+        {
+            if (pooled && !_released)
+            {
+                _released = true;
+                System.Buffers.ArrayPool<uint>.Shared.Return(buffer);
+            }
+        }
+    }
+}
+
+public sealed record FrontendImageCopy(ImageRequest Source, ImageRequest Destination, Func<ComputeProgram> Fallback);
+
 public sealed class ComputeProgram
 {
+    public FrontendImageCopy? ImageCopy { get; init; }
+    public KnownGpuWrite? KnownWrite { get; init; }
+
     public ShaderProgram Program { get; init; }
     public ComputeInputInfo Input { get; init; } = new();
 
@@ -64,23 +138,35 @@ public interface IShaderPipelineProvider
     void DumpRejectedGraphics(RegisterBanks banks, bool autoDraw) { }
 
     GraphicsPrograms GetGraphicsPrograms(
-        VertexStageRegisters vertex,
-        PixelStageRegisters pixel,
-        ShaderInterfaceRegisters shaderInterface,
-        ContextRegisters context,
+        RegisterBanks banks,
         ReadOnlySpan<ColorComponentMap> targetExportMapping,
         bool pixelActive,
         bool depthBound);
 
     GraphicsPrograms GetMeshGraphicsPrograms(
-        VertexStageRegisters vertex,
-        PixelStageRegisters pixel,
-        ShaderInterfaceRegisters shaderInterface,
-        ContextRegisters context,
+        RegisterBanks banks,
         UserConfigRegisters userConfig,
         ReadOnlySpan<ColorComponentMap> targetExportMapping,
         bool pixelActive,
         bool depthBound) => new() { Available = false };
+    GraphicsPrograms GetGraphicsPrograms(
+        RegisterBanks banks,
+        ReadOnlySpan<ColorComponentMap> targetExportMapping,
+        bool pixelActive,
+        bool depthBound,
+        int startInstanceUserData) =>
+        GetGraphicsPrograms(banks, targetExportMapping, pixelActive, depthBound);
+
+    // taskLaunch: an automatic indirect draw launched by the task stage (MeshTaskLaunch). Providers without task launches
+    // never see it: the decision is made only while MeshTaskLaunch is active.
+    GraphicsPrograms GetMeshGraphicsPrograms(
+        RegisterBanks banks,
+        UserConfigRegisters userConfig,
+        ReadOnlySpan<ColorComponentMap> targetExportMapping,
+        bool pixelActive,
+        bool depthBound,
+        bool taskLaunch) =>
+        GetMeshGraphicsPrograms(banks, userConfig, targetExportMapping, pixelActive, depthBound);
 
     PipelineHandle CreateGraphicsPipeline(
         ReadOnlySpan<ColorTargetState> colors,
@@ -104,9 +190,30 @@ public interface IShaderPipelineProvider
         uint dimensionY,
         uint dimensionZ);
 
+    ComputeProgram GetComputeProgram(RegisterBanks banks, uint dispatchInitiator, uint dimensionX, uint dimensionY, uint dimensionZ) =>
+        GetComputeProgram(banks.Shader.Compute, banks.Context.ShaderInterface, dispatchInitiator, dimensionX, dimensionY, dimensionZ);
+
+    // An indirect dispatch reads its dimensions on the GPU, so the provider cannot know its result.
+    ComputeProgram GetComputeProgram(RegisterBanks banks, uint dispatchInitiator, uint dimensionX, uint dimensionY, uint dimensionZ, bool indirect) =>
+        GetComputeProgram(banks, dispatchInitiator, dimensionX, dimensionY, dimensionZ);
+
+    // gpuThreadCounts: the thread counts are in GPU memory (the dimensions are zero); the program reads its thread limits
+    // from shader data the GPU writes (ComputeInputInfo.IndirectThreadCounts).
+    ComputeProgram GetComputeProgram(RegisterBanks banks, uint dispatchInitiator, uint dimensionX, uint dimensionY, uint dimensionZ, bool indirect,
+        bool gpuThreadCounts) =>
+        GetComputeProgram(banks, dispatchInitiator, dimensionX, dimensionY, dimensionZ, indirect);
+
     PipelineHandle CreateComputePipeline(ComputeInputInfo input, ShaderProgram program);
 
     Task? GetComputePipelineCompletion(ShaderProgram program) => null;
+
+    // Whether a session saw this linked program's module compile for minutes (ShaderPrewarmList.IsSlowLinkedCompile).
+    bool IsSlowLinkedCompile(ulong hash) => false;
+
+    // Records what this session learned about a linked program's module compile.
+    void RecordLinkedCompile(ulong hash, bool slow, long milliseconds)
+    {
+    }
 
     // False means the host is still compiling this pipeline; asking again returns it once
     // the compile finishes, without starting a second one.

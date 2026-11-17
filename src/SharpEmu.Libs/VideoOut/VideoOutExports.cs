@@ -124,6 +124,10 @@ public static partial class VideoOutExports
         RunPixelFormatSelfChecks();
     }
 
+    public static bool SplashHoldsGuestFrames { get; set; }
+
+    public static bool CompatibilityMode { get; set; }
+
     public static void ConfigureApplicationInfo(string? title, string? titleId, string? version)
     {
         var parts = new List<string>();
@@ -137,6 +141,11 @@ public static partial class VideoOutExports
             parts.Add($"[{titleId.Trim()}]");
         }
 
+        if (CompatibilityMode)
+        {
+            parts.Add("[compatibility-mode]");
+        }
+
         var application = parts.Count == 0 ? "VideoOut" : string.Join(' ', parts);
         var versionSuffix = string.IsNullOrWhiteSpace(version) ? string.Empty : $" v{version.Trim()}";
         lock (_stateGate)
@@ -148,6 +157,24 @@ public static partial class VideoOutExports
         }
 
         RenderDocCapture.SetCaptureDirectory(GetApplicationTitleId());
+    }
+
+    // Once the runtime knows the game, the presenter (window, Vulkan device and shader prewarm) starts at the size the
+    // host configured, while the game's modules load and initialize. Started at the guest's first video call instead,
+    // it begins seconds after the process, and the compute programs the game asks for right after that hold the boot
+    // while they compile. Hosts that configure no video (tests, tools) start nothing here.
+    // SHARPEMU_EARLY_PRESENTER=0 keeps the start at the first video call.
+    private static readonly bool EarlyPresenter = Environment.GetEnvironmentVariable("SHARPEMU_EARLY_PRESENTER") != "0";
+
+    public static void StartPresenter()
+    {
+        if (!EarlyPresenter || !HostVideoHost.IsVideoConfigured)
+        {
+            return;
+        }
+
+        var options = HostVideoHost.CurrentOptions;
+        GuestGpu.Current.EnsureStarted((uint)options.Width, (uint)options.Height);
     }
 
     internal static string GetApplicationTitleId()
@@ -176,14 +203,9 @@ public static partial class VideoOutExports
             return;
         }
 
-        // macOS can run either backend (Vulkan through MoltenVK, or Metal), so
-        // name the active one in the title to make which is in use unambiguous.
-        var backendSuffix = OperatingSystem.IsMacOS()
-            ? $" ({GuestGpu.Current.BackendName})"
-            : string.Empty;
         lock (_stateGate)
         {
-            _selectedGpuName = $"{gpuName.Trim()}{backendSuffix}";
+            _selectedGpuName = gpuName.Trim();
         }
     }
 
@@ -526,19 +548,36 @@ public static partial class VideoOutExports
             return OrbisVideoOutErrorInvalidHandle;
         }
 
+        var width = port.OutputWidth;
+        var height = port.OutputHeight;
+        lock (_stateGate)
+        {
+            // Titles ask before they register buffers, so the port still holds its placeholder size. A PS5
+            // reports what the display chain can take, not the buffers a title has not picked yet, and a title
+            // that reads HD here lays its viewport out for 4K while it renders into 1080p buffers.
+            if (ctx.TargetGeneration == Generation.Gen5 && Array.TrueForAll(port.Groups, group => group is null))
+            {
+                width = UhdWidth;
+                height = UhdHeight;
+            }
+        }
+
         Span<byte> status = stackalloc byte[VideoOutOutputStatusSize];
-        WriteOutputStatus(status, port.OutputWidth, port.OutputHeight, port.RefreshRate,
+        WriteOutputStatus(status, width, height, port.RefreshRate,
             HostVideoHost.IsHdrOutputSupported);
         return ctx.Memory.TryWrite(statusAddress, status)
             ? (int)OrbisGen2Result.ORBIS_GEN2_OK
             : (int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT;
     }
 
+    private const uint UhdWidth = 3840;
+    private const uint UhdHeight = 2160;
+
     internal static void WriteOutputStatus(Span<byte> status, uint width, uint height, uint refreshRate,
         bool hdrOutputSupported)
     {
         status.Clear();
-        var resolutionClass = width >= 3840 || height >= 2160 ? 2 : 1;
+        var resolutionClass = width >= UhdWidth || height >= UhdHeight ? 2 : 1;
         BinaryPrimitives.WriteInt32LittleEndian(status[0x00..0x04], resolutionClass);
         BinaryPrimitives.WriteInt32LittleEndian(status[0x04..0x08], hdrOutputSupported ? 2 : 1);
         // The status uses a refresh-rate code, not the frequency used for pacing.
@@ -1547,7 +1586,7 @@ public static partial class VideoOutExports
     }
 
     // The video-out export flip: paced on the guest thread, completed at submit.
-    private static int SubmitFlip(CpuContext ctx, int handle, int bufferIndex, int flipMode, long flipArg)
+    public static int SubmitFlip(CpuContext ctx, int handle, int bufferIndex, int flipMode, long flipArg)
     {
         var result = TryReserveFlipRequest(handle, bufferIndex, flipMode, flipArg, gpuQueued: false, out var requestId);
         if (result != 0)
@@ -1566,8 +1605,6 @@ public static partial class VideoOutExports
             CancelFlip(requestId);
             return OrbisVideoOutErrorInvalidHandle;
         }
-        PerfOverlay.RecordSubmit();
-
         var guestImageSubmitted = false;
         ulong guestImageAddress = 0;
         if (bufferIndex >= 0 &&
@@ -1609,7 +1646,6 @@ public static partial class VideoOutExports
             guestImageAddress,
             flipEventCount);
         LoadProgressDiagnostics.TraceGpuWaitSnapshot(ctx.Memory);
-        ReportFrameRate(presented: false);
         var diagnosticFlipNumber = Interlocked.Increment(ref _diagnosticFlipCount);
         if (_holdFirstFlipMilliseconds > 0 && diagnosticFlipNumber == _holdFlipNumber)
         {
@@ -1630,17 +1666,37 @@ public static partial class VideoOutExports
             return;
         }
 
+        var now = Stopwatch.GetTimestamp();
         if (presented)
         {
             Interlocked.Increment(ref _presentedFrameCount);
+            var snapshot = HitchSnapshot.Take();
+            lock (_presentIntervals)
+            {
+                if (_lastPresentTimestamp != 0)
+                {
+                    var interval = now - _lastPresentTimestamp;
+                    _presentIntervals.Add(interval);
+                    if (interval > _hitchThresholdTicks)
+                    {
+                        ReportHitch(now, interval, _lastPresentSnapshot, snapshot);
+                    }
+                }
+
+                _lastPresentTimestamp = now;
+                _lastPresentSnapshot = snapshot;
+            }
         }
         else
         {
             Interlocked.Increment(ref _submittedFrameCount);
+            lock (_presentIntervals)
+            {
+                _submitTimestamps[_submitCursor++ % _submitTimestamps.Length] = now;
+            }
         }
 
         var started = Volatile.Read(ref _frameRateWindowStart);
-        var now = Stopwatch.GetTimestamp();
         var elapsedTicks = now - started;
         if (elapsedTicks < Stopwatch.Frequency ||
             Interlocked.CompareExchange(ref _frameRateWindowStart, now, started) != started)
@@ -1657,7 +1713,129 @@ public static partial class VideoOutExports
             $"[LOADER][PERF] videoout submitted_fps={submitted / elapsedSeconds:F1} " +
             $"presented_fps={presentedCount / elapsedSeconds:F1} " +
             $"draws={draws} draw_ms={drawMs:F0} pipelines={pipelines} spirv={spirvCompiles} " +
-            $"pool_leases={poolLeases} pool_cached_mb={poolCachedBytes / 1024.0 / 1024.0:F1}");
+            $"pool_leases={poolLeases} pool_cached_mb={poolCachedBytes / 1024.0 / 1024.0:F1} {TakeFrameTimes()}{TakeRelaxedWaits()}");
+    }
+
+    private static readonly List<long> _presentIntervals = new();
+    private static long _lastPresentTimestamp;
+    private static long _hitchThresholdTicks = Stopwatch.Frequency / 20;
+    private static HitchSnapshot _lastPresentSnapshot;
+    private static readonly long[] _submitTimestamps = new long[6];
+    private static int _submitCursor;
+    private static long _hitchWindowStart;
+    private static int _hitchesInWindow;
+    private const int MaxHitchReportsPerSecond = 10;
+
+    private readonly record struct HitchSnapshot(int Gen0, int Gen1, int Gen2, TimeSpan Pause,
+        long FlipCount, long FlipTicks, long ReadCount, long ReadTicks, long[] KindCounts, long[] KindTicks,
+        long SlowestTicks, ulong SlowestAddress, int SlowestKind, string SlowestSite)
+    {
+        public static HitchSnapshot Take()
+        {
+            var counts = new long[VulkanVideoPresenter.RoundTripTotals.ReadKinds];
+            var ticks = new long[VulkanVideoPresenter.RoundTripTotals.ReadKinds];
+            for (var kind = 0; kind < counts.Length; kind++)
+            {
+                counts[kind] = Volatile.Read(ref VulkanVideoPresenter.RoundTripTotals.KindCounts[kind]);
+                ticks[kind] = Volatile.Read(ref VulkanVideoPresenter.RoundTripTotals.KindTicks[kind]);
+            }
+
+            var (slowestTicks, slowestAddress, slowestKind, slowestSite) = VulkanVideoPresenter.RoundTripTotals.TakeSlowest();
+            return new(GC.CollectionCount(0), GC.CollectionCount(1), GC.CollectionCount(2),
+                GC.GetTotalPauseDuration(),
+                Volatile.Read(ref VulkanVideoPresenter.RoundTripTotals.FlipCount), Volatile.Read(ref VulkanVideoPresenter.RoundTripTotals.FlipTicks),
+                Volatile.Read(ref VulkanVideoPresenter.RoundTripTotals.ReadCount), Volatile.Read(ref VulkanVideoPresenter.RoundTripTotals.ReadTicks),
+                counts, ticks, slowestTicks, slowestAddress, slowestKind, slowestSite);
+        }
+    }
+
+    private static void ReportHitch(long now, long interval, in HitchSnapshot before, in HitchSnapshot after)
+    {
+        if (now - _hitchWindowStart > Stopwatch.Frequency)
+        {
+            _hitchWindowStart = now;
+            _hitchesInWindow = 0;
+        }
+
+        if (++_hitchesInWindow > MaxHitchReportsPerSecond)
+        {
+            return;
+        }
+
+        static double Milliseconds(long ticks) => ticks * 1000.0 / Stopwatch.Frequency;
+        var count = Math.Min(_submitCursor, _submitTimestamps.Length);
+        var gaps = new List<string>();
+        for (var index = 0; index + 1 < count; index++)
+        {
+            var newer = _submitTimestamps[(_submitCursor - 1 - index) % _submitTimestamps.Length];
+            var older = _submitTimestamps[(_submitCursor - 2 - index) % _submitTimestamps.Length];
+            gaps.Add(FormattableString.Invariant($"{Milliseconds(newer - older):F1}"));
+        }
+
+        var kinds = new List<string>();
+        for (var kind = 0; kind < after.KindCounts.Length; kind++)
+        {
+            var reads = after.KindCounts[kind] - before.KindCounts[kind];
+            if (reads != 0)
+            {
+                kinds.Add(FormattableString.Invariant(
+                    $"{VulkanVideoPresenter.RoundTripTotals.KindName(kind)}:{reads}/{Milliseconds(after.KindTicks[kind] - before.KindTicks[kind]):F1}ms"));
+            }
+        }
+
+        var slowest = after.SlowestTicks == 0
+            ? "none"
+            : FormattableString.Invariant(
+                $"0x{after.SlowestAddress:X}:{Milliseconds(after.SlowestTicks):F1}ms:{VulkanVideoPresenter.RoundTripTotals.KindName(after.SlowestKind)}:{after.SlowestSite}");
+        var lastSubmit = _submitCursor == 0 ? 0 : _submitTimestamps[(_submitCursor - 1) % _submitTimestamps.Length];
+        Console.Error.WriteLine(string.Create(System.Globalization.CultureInfo.InvariantCulture,
+            $"[PERF][HITCH] frame_ms={Milliseconds(interval):F1} since_submit_ms={(lastSubmit == 0 ? 0 : Milliseconds(now - lastSubmit)):F1} " +
+            $"submit_gaps_ms={string.Join(",", gaps)} gc={after.Gen0 - before.Gen0}/{after.Gen1 - before.Gen1}/{after.Gen2 - before.Gen2} " +
+            $"gc_pause_ms={(after.Pause - before.Pause).TotalMilliseconds:F1} " +
+            $"flip_waits={after.FlipCount - before.FlipCount}/{Milliseconds(after.FlipTicks - before.FlipTicks):F1}ms " +
+            $"render_reads={after.ReadCount - before.ReadCount}/{Milliseconds(after.ReadTicks - before.ReadTicks):F1}ms " +
+            $"read_kinds={(kinds.Count == 0 ? "none" : string.Join(",", kinds))} slowest_read={slowest}"));
+    }
+
+    private static string TakeRelaxedWaits()
+    {
+        var hits = Interlocked.Exchange(ref Gpu.GpuCommands.GpuCommandInterpreter.RelaxedWaitHits, 0);
+        var fallbacks = Interlocked.Exchange(ref Gpu.GpuCommands.GpuCommandInterpreter.RelaxedWaitFallbacks, 0);
+        return hits == 0 && fallbacks == 0 ? "" : $" relaxed_waits={hits}/{fallbacks}";
+    }
+
+    private static string TakeFrameTimes()
+    {
+        long[] intervals;
+        lock (_presentIntervals)
+        {
+            intervals = [.. _presentIntervals];
+            _presentIntervals.Clear();
+        }
+
+        if (intervals.Length == 0)
+        {
+            return "frame_ms=none";
+        }
+
+        Array.Sort(intervals);
+        var median = intervals[intervals.Length / 2];
+        lock (_presentIntervals)
+        {
+            _hitchThresholdTicks = Math.Max(median * 3 / 2, Stopwatch.Frequency / 100);
+        }
+        var hitches = 0;
+        foreach (var interval in intervals)
+        {
+            if (interval * 2 > median * 3)
+            {
+                hitches++;
+            }
+        }
+
+        static double Milliseconds(long ticks) => ticks * 1000.0 / Stopwatch.Frequency;
+        return FormattableString.Invariant(
+            $"frame_ms=p50:{Milliseconds(median):F1},p95:{Milliseconds(intervals[(intervals.Length * 95 - 1) / 100]):F1},max:{Milliseconds(intervals[^1]):F1} hitches={hitches}");
     }
 
     private static readonly bool _flipPacingDisabled = string.Equals(

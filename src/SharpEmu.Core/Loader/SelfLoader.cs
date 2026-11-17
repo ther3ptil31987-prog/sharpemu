@@ -217,7 +217,7 @@ public sealed class SelfLoader : ISelfLoader
                 if (!physicalVm.TryAllocateAtExact(imageBase, totalImageSize, executable: true, out var allocatedBase))
                 {
                     // Exact allocation failed — the host may have already claimed
-                    // part of this range (ASLR, Rosetta 2, or another process).
+                    // part of this range (ASLR or another process).
                     // Try backing the fixed range page by page to claim whatever
                     // free gaps exist. If the whole range is occupied the backfill
                     // returns false and we surface the original failure reason.
@@ -279,10 +279,12 @@ public sealed class SelfLoader : ISelfLoader
             out var importedRelocations,
             out var importedModuleNames);
         var executable = imageName ?? (clearVirtualMemory ? "eboot.bin" : string.Empty);
+        var appliedPatchIds = new List<string>();
         foreach (var patch in _activePatches.Where(patch => string.Equals(patch.Executable, executable, StringComparison.OrdinalIgnoreCase)))
         {
             if (patch.TryApply(virtualMemory, programHeaders, imageBase, out var patchError))
             {
+                appliedPatchIds.Add(patch.Id);
                 Console.Error.WriteLine($"[PATCH] Applied '{patch.Name}' to {executable} ({patch.Writes.Count} lines, {patch.AppVersion}).");
             }
             else
@@ -334,7 +336,9 @@ public sealed class SelfLoader : ISelfLoader
                 patchableMemory,
                 programHeaders,
                 imageBase,
-                totalImageSize);
+                totalImageSize,
+                imageData,
+                appliedPatchIds);
         }
 
         Console.WriteLine($"[LOADER] ELF e_entry: 0x{elfHeader.EntryPoint:X16}");

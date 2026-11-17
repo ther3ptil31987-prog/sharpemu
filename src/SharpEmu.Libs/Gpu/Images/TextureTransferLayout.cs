@@ -184,7 +184,8 @@ public sealed class TextureTransferLayout
         ulong uploadSize,
         bool allowDepthTile,
         bool volume,
-        string owner)
+        string owner,
+        uint rowPitch = 0)
     {
         var layout = new TextureTransferLayout();
         var description = new TiledSurfaceDescription(
@@ -245,6 +246,14 @@ public sealed class TextureTransferLayout
                     RowLength = paddedSizes[level].Width,
                     ImageHeight = paddedSizes[level].Height,
                 };
+            }
+
+            if (levels == 1 && rowPitch >= width && rowPitch != layout.Pitch)
+            {
+                layout.Pitch = rowPitch;
+                layout.Mips[0].RowLength = rowPitch;
+                layout.Mips[0].Size = (rowPitch + (ulong)element.TexelWidth - 1) / element.TexelWidth *
+                    ((height + (ulong)element.TexelHeight - 1) / element.TexelHeight) * element.Bytes;
             }
         }
         else if (volume)

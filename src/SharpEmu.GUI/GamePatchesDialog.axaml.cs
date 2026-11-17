@@ -15,7 +15,7 @@ using SharpEmu.Core.Patches;
 
 namespace SharpEmu.GUI;
 
-public partial class GamePatchesDialog : Window
+public partial class GamePatchesDialog : SheetView
 {
     private readonly GamePatchRepository _repository = new();
     private readonly GameEntry? _game;
@@ -125,7 +125,8 @@ public partial class GamePatchesDialog : Window
         HintText.Text = Localization.Instance.Get("Library.Patches.Downloading");
         try
         {
-            var count = await GamePatchDownloader.DownloadAsync(titleId, _game.Version, _repository.DirectoryPath, _downloadCancellation.Token);
+            var count = await GamePatchDownloader.DownloadAsync(titleId, _game.Version, _repository.DirectoryPath,
+                _downloadCancellation.Token, compatibilityMode: _game.CompatibilityMode);
             if (_closed) return;
             StatusText.Text = string.Empty;
             if (count > 0)
@@ -166,27 +167,30 @@ public partial class GamePatchesDialog : Window
             Content = Localization.Instance.Get("Exit.Ok"),
             HorizontalAlignment = HorizontalAlignment.Right,
             IsDefault = true,
-            IsCancel = true,
             Classes = { "accent" },
         };
-        var dialog = new Window
+        var sheet = new SheetView
         {
-            Title = Localization.Instance.Get("Library.Patches.Download"),
-            Width = 440,
-            SizeToContent = SizeToContent.Height,
-            CanResize = false,
-            ShowInTaskbar = false,
-            WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            Background = Background,
+            SheetWidth = 460,
             Content = new StackPanel
             {
-                Margin = new Thickness(24),
+                Margin = new Thickness(28),
                 Spacing = 20,
-                Children = { new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap }, close },
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = Localization.Instance.Get("Library.Patches.Download"),
+                        FontSize = 20,
+                        FontWeight = FontWeight.Bold,
+                    },
+                    new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap },
+                    close,
+                },
             },
         };
-        close.Click += (_, _) => dialog.Close();
-        return dialog.ShowDialog(this);
+        close.Click += (_, _) => sheet.Close();
+        return ShowSheetAsync(sheet);
     }
 
     private void ApplyFilter()
@@ -254,7 +258,7 @@ public partial class GamePatchesDialog : Window
             Directory.CreateDirectory(_repository.DirectoryPath);
             var start = new ProcessStartInfo
             {
-                FileName = OperatingSystem.IsWindows() ? "explorer.exe" : OperatingSystem.IsMacOS() ? "open" : "xdg-open",
+                FileName = OperatingSystem.IsWindows() ? "explorer.exe" : "xdg-open",
                 UseShellExecute = false,
             };
             start.ArgumentList.Add(_repository.DirectoryPath);

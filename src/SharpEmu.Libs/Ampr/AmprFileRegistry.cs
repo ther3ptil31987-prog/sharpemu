@@ -154,7 +154,7 @@ internal static class AmprFileRegistry
     /// <summary>
     /// Kick off <see cref="EnsureApp0Indexed"/> on a background thread as soon as
     /// the host knows app0. otherwise pays the full tree walk on the
-    /// first cooked-id APR miss mid-boot (~8s under Rosetta for DeS).
+    /// first cooked-id APR miss mid-boot.
     /// </summary>
     public static void BeginApp0IndexPreload(string? app0Root)
     {
@@ -247,6 +247,7 @@ internal static class AmprFileRegistry
                     $"[LOADER][INFO] ampr.app0_index_cache_hit root={normalizedRoot} " +
                     $"files={cachedFiles} ids={_hostPathsById.Count} " +
                     $"elapsed_ms={stopwatch.Elapsed.TotalMilliseconds:F1}");
+                RegisterModFiles(normalizedRoot);
                 return;
             }
 
@@ -258,8 +259,9 @@ internal static class AmprFileRegistry
                 }
 
                 // Promote v2 (rehash-on-load) to v3 (precomputed ids) so the
-                // next boot skips the Rosetta FNV storm.
+                // next boot skips the FNV hash storm.
                 TrySaveIndexCache(normalizedRoot, cachePathV3, cachedFiles);
+                RegisterModFiles(normalizedRoot);
                 Console.Error.WriteLine(
                     $"[LOADER][INFO] ampr.app0_index_cache_hit root={normalizedRoot} " +
                     $"files={cachedFiles} ids={_hostPathsById.Count} " +
@@ -307,7 +309,7 @@ internal static class AmprFileRegistry
                 return;
             }
 
-            // Hash + dictionary fill dominates under Rosetta once the walk is
+            // Hash + dictionary fill dominates once the walk is
             // done; parallelize across cores without re-walking the tree.
             Parallel.ForEach(
                 relatives,
@@ -327,6 +329,7 @@ internal static class AmprFileRegistry
             }
 
             TrySaveIndexCache(normalizedRoot, cachePathV3, relatives.Count);
+            RegisterModFiles(normalizedRoot);
             Console.Error.WriteLine(
                 $"[LOADER][INFO] ampr.app0_indexed root={normalizedRoot} " +
                 $"files={relatives.Count} ids={_hostPathsById.Count} " +
@@ -356,6 +359,13 @@ internal static class AmprFileRegistry
         Publish(FnvContinueAsciiPrefix(OffsetBasis, "app0/"u8), relative, hostPath, AliasRank.Compatibility);
         // bare relative
         Publish(OffsetBasis, relative, hostPath, AliasRank.Compatibility);
+    }
+
+    private static void RegisterModFiles(string root)
+    {
+        // Keep persistent APR caches about the base game; publish mod-only files for this session.
+        foreach (var path in GameFileOverlay.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+            RegisterApp0Relative(Path.GetRelativePath(root, path).Replace('\\', '/'), path);
     }
 
     private static void Publish(uint hash, string relative, string hostPath, AliasRank rank)
@@ -547,7 +557,7 @@ internal static class AmprFileRegistry
 
             if (isV3)
             {
-                // Precomputed FNV ids — no Rosetta hash storm on every boot.
+                // Precomputed FNV ids — no hash storm on every boot.
                 var entries = new (string Relative, uint Id0, uint Id1, uint Id2, uint Id3)[expectedFiles];
                 for (var i = 0; i < expectedFiles; i++)
                 {

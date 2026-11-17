@@ -244,6 +244,23 @@ public static partial class AgcExports
         return (int)ctx[CpuRegister.Rax];
     }
 
+    // Matches the packet AcbWaitRegMem writes: 7 dwords for a 32-bit label, 9 for a 64-bit one.
+    [SysAbiExport(
+        Nid = "idlaArvdXEs",
+        ExportName = "sceAgcAcbWaitOnAddressGetSize",
+        Target = Generation.Gen5,
+        LibraryName = "libSceAgc")]
+    public static int AcbWaitOnAddressGetSize(CpuContext ctx)
+    {
+        ctx[CpuRegister.Rax] = (uint)ctx[CpuRegister.Rdi] switch
+        {
+            0 => 7u * sizeof(uint),
+            1 => 9u * sizeof(uint),
+            _ => 0,
+        };
+        return (int)ctx[CpuRegister.Rax];
+    }
+
     [SysAbiExport(
         Nid = "htn36gPnBk4",
         ExportName = "sceAgcAcbWaitRegMem",
@@ -341,12 +358,26 @@ public static partial class AgcExports
         var cachePolicy = (uint)(ctx[CpuRegister.R8] & 0xFF);
         var destinationAddress = ctx[CpuRegister.R9];
         var stackAddress = ctx[CpuRegister.Rsp];
-        if (!TryReadUInt64(ctx, stackAddress + 8, out var dataSelectionRaw) ||
-            !TryReadUInt64(ctx, stackAddress + 16, out var data) ||
-            !TryReadUInt64(ctx, stackAddress + 24, out var gdsOffsetRaw) ||
-            !TryReadUInt64(ctx, stackAddress + 32, out var gdsSizeRaw) ||
-            !TryReadUInt64(ctx, stackAddress + 40, out var interruptRaw) ||
-            !TryReadUInt64(ctx, stackAddress + 48, out var interruptContextIdRaw))
+        ulong dataSelectionRaw, data, gdsOffsetRaw, gdsSizeRaw, interruptRaw, interruptContextIdRaw;
+        // AgcPacketWrites: the six stack words (Rsp + 8 to Rsp + 48) in one read of the same bytes; when it fails, the
+        // six reads below.
+        Span<byte> stackWords = stackalloc byte[6 * sizeof(ulong)];
+        if (AgcPacketWrites.Active && stackAddress <= ulong.MaxValue - 7 * sizeof(ulong) &&
+            ctx.Memory.TryRead(stackAddress + 8, stackWords))
+        {
+            dataSelectionRaw = System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(stackWords);
+            data = System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(stackWords[8..]);
+            gdsOffsetRaw = System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(stackWords[16..]);
+            gdsSizeRaw = System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(stackWords[24..]);
+            interruptRaw = System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(stackWords[32..]);
+            interruptContextIdRaw = System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(stackWords[40..]);
+        }
+        else if (!TryReadUInt64(ctx, stackAddress + 8, out dataSelectionRaw) ||
+            !TryReadUInt64(ctx, stackAddress + 16, out data) ||
+            !TryReadUInt64(ctx, stackAddress + 24, out gdsOffsetRaw) ||
+            !TryReadUInt64(ctx, stackAddress + 32, out gdsSizeRaw) ||
+            !TryReadUInt64(ctx, stackAddress + 40, out interruptRaw) ||
+            !TryReadUInt64(ctx, stackAddress + 48, out interruptContextIdRaw))
         {
             return ReturnPointer(ctx, 0);
         }
@@ -661,7 +692,7 @@ public static partial class AgcExports
 
         var packetDwords = size == 0 ? 7u : 9u;
         var packetRegister = size == 0 ? RWaitMem32 : RWaitMem64;
-        if (!TryAllocateCommandDwords(ctx, commandBufferAddress, packetDwords, out var commandAddress) ||
+        if (!TryAllocateCommandDwords(ctx, commandBufferAddress, packetDwords + WaitOnAddressPadDwords, out var commandAddress) ||
             !TryWriteUInt32(ctx, commandAddress, Pm4(packetDwords, ItNop, packetRegister)) ||
                  !TryWriteUInt32(ctx, commandAddress + 4, (uint)address & (size == 0 ? ~0x3u : ~0x7u)) ||
                  !TryWriteUInt32(ctx, commandAddress + 8, (uint)(address >> 32) & 0x3FFFFu) ||
@@ -687,6 +718,14 @@ public static partial class AgcExports
             return ReturnPointer(ctx, 0);
         }
 
+        Span<uint> pad = stackalloc uint[(int)WaitOnAddressPadDwords];
+        pad.Clear();
+        pad[0] = Pm4(WaitOnAddressPadDwords, ItNop, RZero);
+        if (!TryWriteCommandDwords(ctx, commandAddress + (packetDwords * sizeof(uint)), pad))
+        {
+            return ReturnPointer(ctx, 0);
+        }
+
         if (ShouldTraceHotPath(ref _dcbWaitRegMemTraceCount))
         {
             TraceAgc(
@@ -698,6 +737,10 @@ public static partial class AgcExports
         return ReturnPointer(ctx, commandAddress);
     }
 
+    // A DCB wait takes the native size sceAgcDcbWaitOnAddressGetSize reports: the wait packet, then a NOP over the rest.
+    // Titles size buffers with that export and fill them with waits (UE's submission prologue), so the two must agree.
+    private const uint WaitOnAddressPadDwords = 7;
+
     [SysAbiExport(
         Nid = "43WJ08sSugE",
         ExportName = "sceAgcDcbWaitOnAddressGetSize",
@@ -708,8 +751,8 @@ public static partial class AgcExports
         var labelSize = (uint)context[CpuRegister.Rdi];
         context[CpuRegister.Rax] = labelSize switch
         {
-            0 => 14u * sizeof(uint),
-            1 => 16u * sizeof(uint),
+            0 => (7u + WaitOnAddressPadDwords) * sizeof(uint),
+            1 => (9u + WaitOnAddressPadDwords) * sizeof(uint),
             _ => 0,
         };
         return (int)context[CpuRegister.Rax];
@@ -807,8 +850,12 @@ public static partial class AgcExports
     {
         var commandBufferAddress = ctx[CpuRegister.Rdi];
         var markerAddress = ctx[CpuRegister.Rsi];
+        var atOnce = AgcPacketWrites.Active;
+        byte[] marker;
         if (commandBufferAddress == 0 ||
-            !TryReadGuestCString(ctx, markerAddress, 4095, out var marker))
+            !(atOnce
+                ? TryReadGuestCStringInChunks(ctx, markerAddress, 4095, out marker)
+                : TryReadGuestCString(ctx, markerAddress, 4095, out marker)))
         {
             return ReturnPointer(ctx, 0);
         }

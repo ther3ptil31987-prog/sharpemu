@@ -33,6 +33,7 @@ internal static class TrophyService
         public int Id { get; init; }
         public int Grade { get; init; }
         public int GroupId { get; init; }
+        public int PlatinumId { get; init; } = -1;
         public bool Hidden { get; init; }
         public bool HasReward { get; init; }
         public string Name { get; init; } = string.Empty;
@@ -187,6 +188,35 @@ internal static class TrophyService
         unlockedNow.Add(trophy);
     }
 
+    internal static int UnlockDirect(int id, out int platinumId)
+    {
+        platinumId = -1;
+        List<Trophy> unlockedNow = [];
+        lock (Gate)
+        {
+            EnsureLoaded();
+            var trophies = _trophies!;
+            var trophy = trophies.FirstOrDefault(t => t.Id == id);
+            if (trophy is null)
+                return unchecked((int)0x8055160A);
+            if (trophy.Unlocked)
+                return unchecked((int)0x8055160C);
+            if (trophy.IsPlatinum)
+                return unchecked((int)0x8055160D);
+            Unlock(trophy, unlockedNow);
+            var platinum = trophies.FirstOrDefault(t => t.IsPlatinum && t.Id == trophy.PlatinumId && !t.Unlocked);
+            if (platinum is not null && trophies.Where(t => t.PlatinumId == platinum.Id && !t.IsPlatinum).All(t => t.Unlocked))
+            {
+                Unlock(platinum, unlockedNow);
+                platinumId = platinum.Id;
+            }
+            SaveUnlocks();
+        }
+        foreach (var trophy in unlockedNow)
+            Console.Error.WriteLine($"{UnlockMarker}{KernelMemoryCompatExports.ApplicationTitleId}|{trophy.Id}|{trophy.Grade}|{trophy.Name}");
+        return 0;
+    }
+
     private static bool TryReadNumber(UdsObjectNode root, StatRule rule, out ulong value)
     {
         value = 0;
@@ -223,10 +253,8 @@ internal static class TrophyService
 
         try
         {
-            var trophyPath = KernelMemoryCompatExports.ResolveGuestPath("/app0/sce_sys/trophy2/trophy00.ucp");
-            _trophies = File.Exists(trophyPath)
-                ? ReadTrophies(File.ReadAllBytes(trophyPath), language: TrophyLanguage.FromSystemLanguage(SystemServiceExports.SystemLanguage))
-                : [];
+            _trophies = TrophyCatalog.ReadDefinitions(KernelMemoryCompatExports.ResolveGuestPath("/app0"), false,
+                TrophyLanguage.FromSystemLanguage(SystemServiceExports.SystemLanguage));
             var udsPath = KernelMemoryCompatExports.ResolveGuestPath("/app0/sce_sys/uds/uds00.ucp");
             _rules = File.Exists(udsPath) ? ReadRules(File.ReadAllBytes(udsPath)) : [];
             _unlockPath = UnlockFilePath(KernelMemoryCompatExports.ApplicationTitleId);

@@ -37,8 +37,16 @@ internal sealed class VulkanGuestGpuBackend : IGuestGpuBackend
         return true;
     }
 
+    public IGuestCompiledShader? CreateCachedShader(byte[] payload, uint? inputLocationMask) =>
+        new VulkanCompiledGuestShader(payload) { InputLocationMask = inputLocationMask };
+
     public IGuestCompiledShader GetDepthOnlyFragmentShader() =>
         DepthOnlyFragmentShader;
+
+    public (IGuestCompiledShader Vertex, IGuestCompiledShader Control) CompileTessellationBridge(
+        SharpEmu.ShaderCompiler.Resources.BindingLayout layout, Gen5TessellationDomain domain) =>
+        (new VulkanCompiledGuestShader(SpirvFixedShaders.CreateFullscreenVertex(0)),
+         new VulkanCompiledGuestShader(Gen5TessellationBridge.CompileControl(layout, domain).Spirv));
 
     public void EnsureStarted(uint width, uint height) =>
         VulkanVideoPresenter.EnsureStarted(width, height);

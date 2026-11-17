@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using SharpEmu.Libs.Gpu.Rendering;
+using SharpEmu.Libs.Gpu.Images;
 using SharpEmu.ShaderCompiler;
 using SharpEmu.ShaderCompiler.Resources;
 using Silk.NET.Vulkan;
@@ -11,6 +12,7 @@ namespace SharpEmu.Libs.Gpu.Pipelines;
 // Everything a host pipeline creation reads for one graphics pipeline.
 public sealed class GraphicsPipelineDescription
 {
+    public TessellationPipelineStages? Tessellation { get; init; }
     public required PipelineRenderingState Rendering { get; init; }
     public required PipelineVertexInputState VertexInput { get; init; }
     public required VertexInputInfo VertexInfo { get; init; }
@@ -20,6 +22,24 @@ public sealed class GraphicsPipelineDescription
     public ShaderProgram PixelProgram { get; init; }
     public ShaderProgramInfo? PixelStage { get; init; }
     public required PipelineStaticParameters StaticParameters { get; init; }
+}
+
+public sealed record TessellationPipelineStages(ShaderProgram Control, ShaderProgram Evaluation, uint InputControlPoints);
+// Why a dispatch the CPU evaluated still runs on the GPU instead of landing as a store of the stream.
+internal enum KernelWriteRefusal
+{
+    None,
+    Unsupported,
+    Sparse,
+    Thread,
+    CrossQueue,
+    Publication,
+    PendingRange,
+    PendingWrite,
+    Image,
+    Metadata,
+    Input,
+    Count,
 }
 
 public sealed class ComputePipelineDescription
@@ -49,6 +69,10 @@ internal interface IShaderPipelineHost
 {
     uint MaxPushDescriptors { get; }
 
+    StableImageDescriptorLimits ComputeImageDescriptorLimits => default;
+
+    StableImageDescriptorLimits GraphicsImageDescriptorLimits => default;
+
     bool ComputeWave64Supported { get; }
 
     // True when a 64-invocation wave64 compute workgroup runs as one 64-lane host subgroup.
@@ -57,6 +81,9 @@ internal interface IShaderPipelineHost
     bool ComputeRunsOn32LaneSubgroups(ComputeInputInfo input) => false;
 
     bool MipStatisticsSubgroupReduction => false;
+
+    // The host subgroup of a pixel shader is one guest wave32 and has arithmetic operations.
+    bool PixelSubgroupArithmetic => false;
 
     // Whether the host reads a linked program's call records at run time, through descriptor set 1.
     bool RuntimeCallRecordsSupported => false;
@@ -67,20 +94,37 @@ internal interface IShaderPipelineHost
     long CallMarkSnapshots => 0;
     long CallMarkedAt(uint bit) => 0;
 
+    bool TableBlocks => false;
+
     bool GraphicsSubgroupOperationsEnabled { get; }
 
     // The device supports shaderSharedInt64Atomics, so LDS 64-bit atomics can be
     // emitted as real 64-bit atomics instead of a non-atomic 32-bit pair.
     bool SharedInt64AtomicsEnabled { get; }
 
+    // The device supports shaderBufferInt64Atomics, so a 64-bit buffer atomic (BUFFER_ATOMIC_*_X2) is
+    // one 64-bit atomic instead of a pair of 32-bit ones, which is not atomic as a pair.
+    bool BufferInt64AtomicsEnabled => false;
+
     // The device supports shaderImageInt64Atomics, so an atomic on a 64-bit image texel
     // (a 32_32 UINT image) can be compiled; without it such a program is rejected.
     bool ImageInt64AtomicsEnabled => false;
+
+    // The device supports shaderDeviceClock, so a program can read a running clock.
+    bool ShaderDeviceClockEnabled => false;
     bool ShaderSignedZeroInfNanPreserveFloat32Supported => false;
+
+    // The device was created with robustBufferAccess2: a storage buffer access past its descriptor's range reads zero and
+    // writes nothing.
+    bool RobustBufferAccess2Enabled => false;
+
+    // The device was created with shaderFloat16 and converts f16 exactly under float controls (NativeFloat16Conversions).
+    bool NativeFloat16Conversions => false;
     bool ExecGuardElisionEnabled => true;
     ShaderPrewarmList? ShaderPrewarm => null;
     bool PerVertexPixelInputsSupported => true;
     bool ClipDistanceEnabled => false;
+    bool ShaderDrawParametersSupported => false;
 
     bool MeshShadersSupported => false;
 
@@ -91,6 +135,11 @@ internal interface IShaderPipelineHost
 
     // The device can blend with a second fragment output (dualSrcBlend).
     bool SupportsDualSourceBlend => false;
+
+    // The device has the bindless heap set (descriptor indexing with update-after-bind and partially bound arrays, and
+    // null descriptors): an image or sampler read from one heap V# at an index the host cannot evaluate becomes a heap
+    // record instead of rejecting the program.
+    bool SupportsBindlessHeap => false;
 
     // The sample counts a pipeline without attachments can rasterize at.
     SampleCountFlags NoAttachmentSampleCounts { get; }
@@ -111,10 +160,48 @@ internal interface IShaderPipelineHost
     // the resource cache then re-materializes instead of trusting a stale copy.
     bool TryReadResidentGuestBytes(ulong address, Span<byte> destination, bool clean) => false;
 
+    bool TryCopyImage(in ImageRequest source, in ImageRequest destination) => false;
+
+    uint[] NormalizeImageDescriptor(IShaderFrontend frontend, ReadOnlySpan<uint> words,
+        ShaderStage stage, ulong shaderHash, string source) => frontend.NormalizeImageForResolution(words, stage, shaderHash, source, true);
+    // A resident read that refuses instead of waiting for pending command-thread work.
+    bool TryPeekResidentGuestBytes(ulong address, Span<byte> destination) => false;
+
+    bool CpuWriteNeedsGpuData(ulong address, ulong size) => false;
+
+    // Queues the words as a store at the current stream position when no earlier work may still touch the range.
+    KernelWriteRefusal TryPostKernelWrite(ulong address, ReadOnlySpan<uint> words) => KernelWriteRefusal.Unsupported;
+
     // Creates the host module of one compiled permutation and returns its handle.
     ulong CreateShaderModule(IGuestCompiledShader shader, ShaderStage stage, ulong hash, ulong programId);
 
     PipelineHandle CreateGraphicsPipeline(GraphicsPipelineDescription description);
+
+    // Creates the graphics pipeline without blocking the command stream on the host shader compiler: false means the
+    // compile is still running and the caller should ask again with the same description, true hands over the finished
+    // pipeline. A backend that compiles cheaply keeps the blocking behaviour.
+    bool TryCreateGraphicsPipeline(GraphicsPipelineDescription description, out PipelineHandle handle)
+    {
+        handle = CreateGraphicsPipeline(description);
+        return true;
+    }
+
+    // Blocks until the compile TryCreateGraphicsPipeline left running for this description is done. The caller holds no
+    // pipeline cache lock, so programs of later draws resolve meanwhile.
+    void WaitForGraphicsPipeline(GraphicsPipelineDescription description)
+    {
+    }
+
+    // A pixel program was created; the host can start compiling what depends on the program alone.
+    void PixelProgramCreated(ShaderProgramInfo program, ulong module)
+    {
+    }
+
+    // A vertex or mesh program was recorded for the prewarm under prewarmIdentity (ShaderPrewarmList.Identity); the host
+    // records the states it compiles the program's pre-rasterization libraries with.
+    void VertexProgramRecorded(ulong module, ulong prewarmIdentity)
+    {
+    }
 
     PipelineHandle CreateComputePipeline(ComputePipelineDescription description);
 

@@ -13,6 +13,7 @@ public enum ShaderStage : byte
     Pixel,
     Compute,
     Mesh,
+    TessellationEvaluation,
 }
 
 public enum ImageNumericClass : byte
@@ -46,7 +47,6 @@ public sealed class BufferResource
     public uint Source { get; set; }
     public uint FirstUsePc { get; set; }
     public uint MaxByteExtent { get; set; }
-    public uint PackedStride { get; set; }
     public uint DescriptorFormat { get; set; } = DescriptorConstants.InvalidFormat;
     public uint DescriptorSwizzle { get; set; } = DescriptorConstants.IdentityDestinationSelect;
     public uint ImageAlias { get; set; } = DescriptorConstants.NoIndex;
@@ -193,8 +193,17 @@ public sealed class ShaderResourceInfo
     // A call that reaches a callee the program does not hold marks it (CallMarks).
     public bool UsesCallMarks { get; set; }
 
-    // The program has shader calls and reads device addresses: it binds DescriptorBindingKind.DeviceAddressFallback.
+    // The program reads device addresses through the compact lowering (it has shader calls, or CompactMemoryAccessPolicy
+    // chose it): it binds DescriptorBindingKind.DeviceAddressFallback.
     public bool UsesDeviceAddressFallback { get; set; }
+
+    // Some access indexes a buffer binding (idxen): the layout carries every buffer binding's V# stride as shader data
+    // (BindingLayout.BufferStridesDword), which the access multiplies the index by.
+    public bool UsesIndexedBuffers { get; set; }
+
+    // Storage images take their destination select from shader data (RuntimeImageSwizzle); the layout carries the store
+    // channel map of each written one (BindingLayout.StorageImageSwizzlesDword).
+    public bool UsesRuntimeImageSwizzles { get; set; }
 
     public ShaderResourceInfo Clone() => new()
     {
@@ -216,6 +225,8 @@ public sealed class ShaderResourceInfo
         UsesCallRecords = UsesCallRecords,
         UsesCallMarks = UsesCallMarks,
         UsesDeviceAddressFallback = UsesDeviceAddressFallback,
+        UsesIndexedBuffers = UsesIndexedBuffers,
+        UsesRuntimeImageSwizzles = UsesRuntimeImageSwizzles,
     };
 }
 
@@ -257,6 +268,7 @@ public sealed class DescriptorSource
     public ScalarValue[] Dwords { get; init; } = [];
     public uint DwordCount => (uint)Dwords.Length;
     public IndirectImageSelector? IndirectImage { get; init; }
+    public HeapRecordSelector? Heap { get; init; }
     public CallRecordSelector? CallRecord { get; init; }
 }
 

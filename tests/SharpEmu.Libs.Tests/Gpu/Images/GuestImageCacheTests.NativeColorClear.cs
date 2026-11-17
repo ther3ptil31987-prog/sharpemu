@@ -56,6 +56,61 @@ public sealed partial class GuestImageCacheTests
         _vulkan.AssertNoValidationMessages();
     }
 
+    [Fact]
+    public void RepeatedNativeColorClearRegistrationKeepsTheMetadataGeneration()
+    {
+        if (!GatePrerequisites.Ready(_vulkan)) return;
+        using var harness = new CacheHarness(_vulkan);
+        var address = harness.MapBacked(0x20000, ReadWrite);
+        var metadataAddress = address + 0x10000;
+        var target = AsColorTarget(LinearRequest(address, 8, Format.R16G16B16A16Sfloat,
+            GuestPixelFormat.Bits16_16_16_16Float, GuestImageType.Color2D, new Extent3D(1, 1, 1), 1, 8, 1));
+        target.Description.Metadata.Kind = MetadataKind.Dcc;
+        target.Description.Metadata.Range = new GuestSpan(metadataAddress, 4096);
+        target.Description.Metadata.NativeColorClear = true;
+        target.Description.Metadata.PackedColorClearSupported = true;
+        target.Description.Metadata.PackedColorClear = new ClearColorValue(0f, 0f, 1f, 1f);
+        harness.Write(metadataAddress, Enumerable.Repeat((byte)0xFF, 4096).ToArray());
+        var identifier = harness.Find(ref target);
+        harness.Worker.Run(() => harness.Images.ApplyNativeColorClear(identifier, target));
+        var generation = harness.Images.MetadataGeneration;
+
+        harness.Worker.Run(() => harness.Images.ApplyNativeColorClear(identifier, target));
+
+        Assert.Equal(generation, harness.Images.MetadataGeneration);
+        harness.Shutdown();
+    }
+
+    [Fact]
+    public void NativeColorClearIsSettledOnlyWhileTheRegistrationIsCurrentAndNoSliceHoldsAClearCode()
+    {
+        if (!GatePrerequisites.Ready(_vulkan)) return;
+        using var harness = new CacheHarness(_vulkan);
+        var address = harness.MapBacked(0x20000, ReadWrite);
+        var metadataAddress = address + 0x10000;
+        var target = AsColorTarget(LinearRequest(address, 8, Format.R16G16B16A16Sfloat,
+            GuestPixelFormat.Bits16_16_16_16Float, GuestImageType.Color2D, new Extent3D(1, 1, 1), 1, 8, 1));
+        target.Description.Metadata.Kind = MetadataKind.Dcc;
+        target.Description.Metadata.Range = new GuestSpan(metadataAddress, 4096);
+        target.Description.Metadata.NativeColorClear = true;
+        target.Description.Metadata.PackedColorClearSupported = true;
+        target.Description.Metadata.PackedColorClear = new ClearColorValue(0f, 0f, 1f, 1f);
+        harness.Write(metadataAddress, Enumerable.Repeat((byte)0xFF, 4096).ToArray());
+        var identifier = harness.Find(ref target);
+        Assert.False(harness.Images.NativeColorClearSettled(identifier, target));
+
+        harness.Worker.Run(() => harness.Images.ApplyNativeColorClear(identifier, target));
+        Assert.True(harness.Images.NativeColorClearSettled(identifier, target));
+
+        var otherClear = target;
+        otherClear.Description.Metadata.PackedColorClear = new ClearColorValue(1f, 0f, 0f, 1f);
+        Assert.False(harness.Images.NativeColorClearSettled(identifier, otherClear));
+
+        harness.Write(metadataAddress, Enumerable.Repeat((byte)0x20, 4096).ToArray());
+        Assert.False(harness.Images.NativeColorClearSettled(identifier, target));
+        harness.Shutdown();
+    }
+
     [Theory]
     [InlineData(0u, false, true)]
     [InlineData(0u, true, false)]
@@ -138,10 +193,10 @@ public sealed partial class GuestImageCacheTests
         harness.Worker.Run(() =>
         {
             var command = new CommandBuffer(harness.Scheduler.Current.Handle);
-            image.Transition(ImageLayout.TransferDstOptimal, AccessFlags.TransferWriteBit, null, command);
+            image.Transition(AccessFlags.TransferWriteBit, null, command);
             var range = new ImageSubresourceRange(ImageAspectFlags.ColorBit, 0, 1, 0, 1);
             var color = new ClearColorValue(1f, 0f, 0f, 0.5f);
-            _vulkan.Vk.CmdClearColorImage(command, image.Backing.Handle, ImageLayout.TransferDstOptimal, &color, 1, &range);
+            _vulkan.Vk.CmdClearColorImage(command, image.Backing.Handle, ImageLayout.General, &color, 1, &range);
             harness.Images.MarkGpuWritten(identifier);
         });
         var written = harness.ReadImageBytes(image);

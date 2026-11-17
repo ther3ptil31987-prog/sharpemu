@@ -7,28 +7,78 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 ## Scope
 
-`SHARPEMU_SNAPSHOT_COMPUTE_HASH` selects the first two matching Vulkan dispatches
-for image snapshots before and after execution. See [image snapshots](image-clear-tracing.md#selected-draw-snapshots).
-
-`SHARPEMU_SNAPSHOT_PIXEL_HASH` selects the first two Vulkan draws with a matching
-pixel shader hash for input/output image snapshots. It is off by default. See
-[selected draw snapshots](image-clear-tracing.md#selected-draw-snapshots) for limits and output paths.
-
 This list contains each `SHARPEMU_*` environment variable in the repository that the GUI does not show.
-The GUI exposes these variables on its **Options** and **Game options** pages:
-`SHARPEMU_BTHID_UNAVAILABLE`, `SHARPEMU_CRASH_CAPTURE`, `SHARPEMU_DEFAULT_PROFILE`,
-`SHARPEMU_DISABLE_IMPORT_LOOP_GUARD`, `SHARPEMU_DUMP_SPIRV`, `SHARPEMU_LOG_DIRECT_MEMORY`, `SHARPEMU_LOG_IO`,
-`SHARPEMU_LOG_NP`, `SHARPEMU_PROFILE_PERFORMANCE`, `SHARPEMU_PROFILE_PERFORMANCE_FRAME_TRACE`,
-`SHARPEMU_RENDERDOC`, `SHARPEMU_SKIP_RT`, `SHARPEMU_VK_DISABLE_IMPLICITS`, `SHARPEMU_STRICT_COMPUTE`, `SHARPEMU_VK_VALIDATION`, `SHARPEMU_WRITABLE_APP0`.
+A few exposed variables keep a row in the tables below because the row explains more than the
+GUI does; those rows say "exposed in GUI".
+The GUI exposes these variables on its **Game options** page:
+`SHARPEMU_AUDIO_LATENCY_MS`, `SHARPEMU_BINK_MODE`, `SHARPEMU_BTHID_UNAVAILABLE`, `SHARPEMU_CRASH_CAPTURE` (Windows x64 only),
+`SHARPEMU_DISABLE_IMPORT_LOOP_GUARD`, `SHARPEMU_DUMP_SPIRV`, `SHARPEMU_GNM_TESSELLATION`,
+`SHARPEMU_GPU_READBACKS`, `SHARPEMU_IGNORE_GUEST_EXCEPTIONS`, `SHARPEMU_LOG_DIRECT_MEMORY`, `SHARPEMU_LOG_IO`,
+`SHARPEMU_LOG_NP`, `SHARPEMU_LOG_VIDEOOUT_FPS`, `SHARPEMU_MOVIE_CLOCK`, `SHARPEMU_NO_FLIP_PACING`,
+`SHARPEMU_PROFILE_PERFORMANCE`, `SHARPEMU_PROFILE_PERFORMANCE_FRAME_TRACE`, `SHARPEMU_RENDERDOC`,
+`SHARPEMU_SHADER_PREWARM`, `SHARPEMU_SHADER_PREWARM_WAIT`, `SHARPEMU_SKIP_RT`, `SHARPEMU_STRICT_COMPUTE`,
+`SHARPEMU_VK_DISABLE_IMPLICITS`, `SHARPEMU_VK_PIPELINE_CACHE`, `SHARPEMU_VK_VALIDATION`, `SHARPEMU_WRITABLE_APP0`.
+The **Options** page sets `SHARPEMU_DEFAULT_PROFILE` and `SHARPEMU_GNM_TROPHY_KEY` for every game.
 
-The list contains 269 variables. The source was examined on 2026-09-19, branch `dev`.
+The initial inventory contained 269 variables, examined on 2026-09-19, branch `dev`.
+The GnmMode section was updated from source on 2026-10-26.
 The descriptions come from the code that reads each variable. The emulator was not started for this list.
+
+## Launch settings and overrides
+
+The GUI and CLI resolve the same per-game settings file in `user/custom_configs`
+under the user data root (`SHARPEMU_USER_DIR`, the executable's folder in portable
+mode, `~/.local/share/SharpEmu` on Linux or `%APPDATA%\SharpEmu` on Windows).
+The file name is the title ID when metadata provides one. Otherwise it is `PATH-`
+followed by the first 32 hexadecimal characters of SHA-256 of the full executable
+or archive path. Relative paths are normalized; only Windows paths are folded to
+uppercase, so distinct files on case-sensitive Linux volumes remain distinct.
+Moving a game without a title ID changes its settings key.
+
+**Options → General, Logging, Graphics and Environment** edit the settings every
+game starts from, saved in `user/game_defaults.json`. A game's file stores changes from those shared settings.
+Inherited rows show **Global**; a changed row has a reset button that restores the
+shared value. Values matching the inherited value are removed from the game's file.
+
+The GUI sends each exposed switch's resolved state to the child process, including
+off values. Custom variables for every game (`user/custom_envs.json`) apply next,
+then the game's own custom variables. **Launch with variables** applies a final,
+launch-only layer; **Save to this game** stores those entries instead of launching.
+The launcher's own environment is restored after creating the child, including
+when process creation fails.
+
+`SHARPEMU_DEFAULT_PROFILE` (the on-screen keyboard's default text) and
+`SHARPEMU_GNM_TROPHY_KEY` come from the launcher-wide **Options** page rather than
+from the game's file.
+
+A terminal launch applies logging, strict loading, import tracing, video options,
+Bink playback, environment switches and custom variables from the same file.
+Variables already supplied by a script override file settings; explicit command
+line arguments override both. `--strict=off`, `--trace-imports=0` and
+`--no-log-file` can disable corresponding file settings. Log file naming follows
+the launcher's shared log-path preference.
+
+The first start of a launcher with this layout moves game settings out of
+`gui-settings.json` into each known game's file and keeps a copy of the old file
+as `gui-settings.json.bak-pre-split`.
+
+## Vulkan pipeline cache (GUI Performance option)
+
+`SHARPEMU_VK_PIPELINE_CACHE` controls the on-disk pipeline caches in
+`user/pipeline_cache/<TITLE ID>/`. Unset (the GUI's **Automatic**) keeps the
+driver's pipeline cache file on Linux only; `1` also keeps it on Windows; `0`
+turns every on-disk pipeline cache off. **Compiled shader files** in Options opens
+that folder. **Clear** deletes it, the `*.graph` files of the shader-analysis cache
+(`SHARPEMU_SHADER_ANALYSIS_CACHE_PATH`) and the old
+`vulkan-pipeline-cache.bin` in the local application data folder, which a launch
+would otherwise import again. Clearing only makes the next launch of each game
+analyse and compile its shaders again.
 
 ## Ray-tracing compute skip (GUI Debug option)
 
 `SHARPEMU_SKIP_RT` is off by default. Set it to `1` to skip ray-tracing compute.
 Unset it or set it to `0` to run those shaders. The Debug section exposes this
-switch in Options and Game options. Restart the game after a change.
+switch in Game options. Restart the game after a change.
 Compute shaders with `ImageBvhIntersectRay` or `ImageBvh64IntersectRay` are
 skipped before resource planning and compilation. The entire dispatch is skipped.
 This compatibility workaround applies with either strict-compute setting.
@@ -42,8 +92,8 @@ See [Import results and diagnostic logging](import-result-logging.md) for expect
 result filters, mutex warning sampling, and diagnostic selection.
 
 1. Set the variable in the shell before you start the emulator or the GUI.
-2. You can also enter additional env vars using the button next to the "Play" button from GUI.
-3. The GUI also accepts a variable in the `EnvironmentToggles` list of its settings file. Write `NAME` or `NAME=value`. An entry without a value gets the value `1`.
+2. In the GUI, **Options → Environment → Variables for every game** sets variables for all games (saved in `user/custom_envs.json`), and a game's **Game settings → Environment variables** sets them for that game only. A game's own variable wins over the same name in the list for every game.
+3. The per-game settings file in `user/custom_configs` also accepts a variable in its `EnvironmentToggles` list. Write `NAME` or `NAME=value`. An entry without a value gets the value `1`.
 4. The emulator reads most variables one time, when it starts. Start the game again after a change.
 5. If the **Value** column shows `1`, only the value `1` turns the function on, unless the row gives other values.
 
@@ -51,20 +101,20 @@ result filters, mutex warning sampling, and diagnostic selection.
 
 | Group | Variables |
 | --- | --- |
-| Behavior switches | 19 |
-| GPU and Vulkan | 59 |
-| Metal | 10 |
+| Behavior switches | 17 |
+| GPU and Vulkan | 63 |
+| GnmMode | 4 (plus 2 shared switches listed below; trophy key also exposed in GUI) |
 | Audio and video | 6 |
 | Input | 5 |
-| Memory and CPU | 19 |
+| Memory and CPU | 20 |
 | Loader | 11 |
 | Debugger | 1 |
-| Log channels | 72 |
-| Traces | 25 |
-| Data dumps | 12 |
-| Performance measurement | 17 |
+| Log channels | 76 |
+| Traces | 31 |
+| Data dumps | 14 |
+| Performance measurement | 20 |
 | Internal | 1 |
-| Tests and tools | 12 |
+| Tests and tools | 11 |
 
 ## Behavior switches
 
@@ -74,14 +124,12 @@ These variables change how the emulator operates.
 | --- | --- | --- | --- |
 | `SHARPEMU_AGC_VERSION13_DEFAULTS` | text (`legacy`, `generic` or `0`) | Selects the register defaults for AGC version 13 requests. The default uses the version 11 compact tables. The values `legacy`, `generic` and `0` use the older generic layout. | `AgcExports.Init.cs` |
 | `SHARPEMU_DISABLE_LLE_LIBC` | `1` | Stops the use of the guest libc module for libc exports. The emulator then uses its HLE handlers for these exports. | `DirectExecutionBackend.cs` |
-| `SHARPEMU_HLE_FAST_MEMCPY` | `0` | Set to `0` to stop the native fast-path stub for the guest libc `memcpy` and `memmove`, so those imports use the managed HLE gateway again. | `DirectExecutionBackend.FastPath.cs` |
-| `SHARPEMU_HLE_FAST_PATH` | `0` | Set to `0` to stop the native fast-path stubs for `pthread_self` and `pthread_getspecific`, so those imports use the managed HLE gateway again. The stubs are on by default on macOS x64 and are off on any run that traces imports or pthreads. | `DirectExecutionBackend.FastPath.cs` |
 | `SHARPEMU_HOLD_FIRST_FLIP_MS` | number | Stops the thread that submits the flip for this number of milliseconds on one guest flip. The range is 0 to 60000 and the default is 0 (off). `SHARPEMU_HOLD_FLIP_NUMBER` selects the flip. | `VideoOutExports.cs` |
 | `SHARPEMU_HOLD_FLIP_NUMBER` | number | Selects the guest flip that `SHARPEMU_HOLD_FIRST_FLIP_MS` holds. The minimum is 1 and the default is 1 (the first flip). | `VideoOutExports.cs` |
-| `SHARPEMU_IGNORE_GUEST_EXCEPTIONS` | `1` | `sceKernelRaiseException` returns OK and does not call the installed guest exception handler. Default is off. | `KernelExceptionCompatExports.cs` |
+| `SHARPEMU_IGNORE_GUEST_EXCEPTIONS` (exposed in GUI) | `1` | `sceKernelRaiseException` returns OK and does not call the installed guest exception handler. Default is off. | `KernelExceptionCompatExports.cs` |
 | `SHARPEMU_IMPORT_LOOP_GUARD_SECONDS` | number | When `SHARPEMU_DISABLE_IMPORT_LOOP_GUARD=0` enables the guard, sets how long an import call pattern can repeat before a guest exit. The default is 5 seconds; 0 turns the guard off. | `DirectExecutionBackend.Imports.cs`, `DirectExecutionBackend.cs` |
 | `SHARPEMU_NET_REDIRECT` | IP address | Sends guest `connect` and `sendto` traffic to this host IP address. When unset, the emulator permits outbound guest traffic only to loopback addresses. If the value is not a valid IP address, the emulator keeps the original destination and permits the traffic. | `KernelSocketCompatExports.cs` |
-| `SHARPEMU_NO_FLIP_PACING` | `1` | Stops flip pacing. The emulator completes each flip immediately and does not wait for the display refresh time. The default is off. | `VideoOutExports.cs`, `VideoOutExports.FlipRequests.cs` |
+| `SHARPEMU_NO_FLIP_PACING` (exposed in GUI) | `1` | Stops flip pacing. The emulator completes each flip immediately and does not wait for the display refresh time. The default is off. | `VideoOutExports.cs`, `VideoOutExports.FlipRequests.cs` |
 | `SHARPEMU_OVERLAY` | `0` | Hides the performance overlay at start, even when the video options have the overlay on. All other values use the video options. | `PerfOverlay.cs`, `PerformanceOverlayState.cs` |
 | `SHARPEMU_POSIX_GPU_FAULT_FAST_PATH` | `0` | Set to `0` to stop the POSIX fault bridge from offering GPU-tracked page faults to the GPU memory tracker before it builds the Win64 exception context. The fault then takes the full handler order again. | `DirectExecutionBackend.PosixSignals.cs` |
 | `SHARPEMU_RETAIN_SUBMITTED_INDEX_DATA` | `0` | The default is on. The emulator keeps a copy of submitted index data until the translated draws run. Set to `0` to stop this copy. Use `0` only for a comparison test. | `AgcExports.SubmittedGeometry.cs` |
@@ -92,12 +140,53 @@ These variables change how the emulator operates.
 | `SHARPEMU_TEMP0_DIR` | path | Set the host directory for the guest `temp0` mount. The default is `user/temp/<app name>/temp0` next to the executable. When unset, the kernel code sets this variable to the default path. | `AppContentExports.cs`, `KernelMemoryCompatExports.cs` |
 | `SHARPEMU_TRACE_TITLE_SHADER_STATE` | `1` | The SPIR-V translator changes the pixel shader at address 0x0000000500781200 for diagnosis. The first float output then shows the execution state, the wave mask state, and the export state as colors. Default is off. | `Gen5SpirvTranslator.cs` |
 
+## GnmMode (PS4 / GCN)
+
+The environment variables documented in the other sections still apply to
+GnmMode's shared CPU, memory, audio, savedata and GPU paths, with the same
+defaults and platform/backend restrictions. This section adds GnmMode-specific
+controls and highlights shared switches that also produce GNM diagnostics.
+
+These switches apply to the PS4 GnmMode path. Detailed GNM logging is off by
+default. Set the logging variables to exactly `1` before starting the game;
+unset them or use `0` for normal play. Restart the game after changing them.
+The two GNM log switches are independent: enable both for a full GNM trace.
+
+| Variable | Value / default | Function | Code that reads it |
+| --- | --- | --- | --- |
+| `SHARPEMU_LOG_GNM` | `1`; default off | Enables GPU target and shadow addresses, vertex-fetch linking and decode diagnostics, tessellation linking, scatter-copy details, packet traces, shader-bind memory probes, and sampled submit/flip timing. Strings and diagnostic-only counters are skipped when off. | `GnmDiagnostics.cs`; GnmMode GPU, shader, GNM driver and VideoOut code |
+| `SHARPEMU_LOG_GNM_IMAGES` | `1`; default off | Enables successful GCN T# to AGC descriptor conversions, raw before/after descriptor words, extended conversion warnings, and thin-1D texture readback diagnostics. Successful conversion traces and warnings have separate limits of 192 distinct shader/descriptor layouts per process; address-only variations are omitted. With this switch off, conversion failures still produce short, deduplicated warnings. | `GnmDiagnostics.cs`, `GcnImageDescriptor.cs`, `GcnSampledImageDetiler.cs` |
+| `SHARPEMU_GNM_TESSELLATION` (exposed in GUI) | `0` disables; default on | Enables translation of GCN tessellation stages. Only `0` disables it; leave unset for normal rendering. Disabling it can remove tessellated geometry. | `GnmCommandPackets.cs` |
+| `SHARPEMU_GNM_TROPHY_KEY` (exposed in GUI) | 32 hexadecimal characters; unset by default | PS4 retail trophy key used with `sce_sys/npbind.dat` to decrypt ESFM metadata inside `sce_sys/trophy/trophy00.trp`. Configure it under Options → GnmMode → Trophy key. The launcher saves it in local GUI settings and passes it to the game process through this variable. Restart a running game after changing it. Trophy progress uses the existing trophy store and notifications. No key is bundled. | `GnmTrophyPackageReader.cs`, `GnmTrophyExports.cs` |
+| `SHARPEMU_LOG_AJM` (shared) | `1`; default off | Also enables `[GNMMODE][AJM]` audio job and codec diagnostics. Independent of the GNM log switches. See also Log channels below. | `GnmAjmExports.cs` |
+| `SHARPEMU_PROFILE_PERFORMANCE` (shared, exposed in GUI) | `1`; default off | Also enables `[PERF][GNM_IMAGES]` summaries every 5 seconds while there is image activity: normalization time, detile cache hits, hash cost, CPU/GPU detiles, GPU reuse, abandoned work, and invalidations. It also enables shared performance reports. | `GnmImageProfile.cs` |
+
+The first successful PS4 savedata `Mount` or `Mount2` logs its ABI translation
+once per process. Later successful mounts stay quiet, including with GNM logging
+enabled; mount failures remain visible. Startup title/module and patch messages,
+warnings and errors do not require a GNM log switch. Existing warning sampling
+and limits still apply.
+
+```powershell
+$env:SHARPEMU_LOG_GNM = '1'
+$env:SHARPEMU_LOG_GNM_IMAGES = '1'
+```
+
+For normal play, remove these entries from the GUI's additional environment
+variables, or remove them from the launching shell:
+
+```powershell
+Remove-Item Env:SHARPEMU_LOG_GNM -ErrorAction SilentlyContinue
+Remove-Item Env:SHARPEMU_LOG_GNM_IMAGES -ErrorAction SilentlyContinue
+```
+
 ## GPU and Vulkan
 
 These variables change the GPU path or the Vulkan presenter.
 
 | Variable | Value | Function | Code that reads it |
 | --- | --- | --- | --- |
+| `SHARPEMU_ASYNC_COMPUTE_PIPELINES` | `0` | `0` compiles a compute pipeline inline, inside the pipeline cache's lock. By default the host shader compiler runs on worker threads (half the processor count, at least two), so a long compile does not stop other queues from creating their own pipelines. | `VulkanVideoPresenter.Pipelines.cs` |
 | `SHARPEMU_ASYNC_GUEST_READBACK` | `0` | `0` makes a guest thread that reads GPU-written buffer memory wait until the render thread has copied the data back. The default starts the copy on the render thread and lets the guest thread wait for it on a separate readback slot, so the render thread continues. | `GuestBufferCache.cs` |
 | `SHARPEMU_CAPTURE_PIXEL_EXEC_PCS` | list (`pc:register` pairs) | At each given instruction PC, the pixel shader writes the execution flag to the given VGPR register. The value is 1.0 when the flag is set and 0.0 when it is not. `SHARPEMU_CAPTURE_PIXEL_VGPR_ADDRESS` must match the shader address. | `Gen5SpirvTranslator.cs` |
 | `SHARPEMU_CAPTURE_PIXEL_IMAGE_ADDRESS` | hex address | Selects the pixel shader for the image capture by its program address. The default is no capture. Use it with `SHARPEMU_CAPTURE_PIXEL_IMAGE_PC`. | `Gen5SpirvTranslator.cs` |
@@ -134,47 +223,32 @@ These variables change the GPU path or the Vulkan presenter.
 | `SHARPEMU_FORCE_TITLE_SINGLE_MRT` | `1` | The translator declares only the first pixel output for the pixel shader at guest address 0x0000000500781200. It does not declare the other render target outputs. Default is off. | `Gen5SpirvTranslator.cs` |
 | `SHARPEMU_FORCE_TITLE_SOLID_FRAGMENT` | `1` | The Vulkan presenter reads the value into a field. No code uses the field, so the variable has no effect at this time. | `VulkanVideoPresenter.Draws.Recording.cs` |
 | `SHARPEMU_FORCE_TITLE_VERTEX_OUTPUTS_ONE` | `1` | Vertex export targets 32 to 35 write the vector (1, 1, 1, 1). This applies only to the vertex shader at guest address 0x0000000500780000. Default is off. | `Gen5SpirvTranslator.cs` |
-| `SHARPEMU_GPU_BACKEND` | `vulkan` or `metal` | Selects the guest GPU backend. The default is Vulkan. The value `metal` works only on macOS, and other hosts show a warning and use Vulkan. | `GuestGpu.cs` |
 | `SHARPEMU_GPU_WAIT_SPIN_US` | number (microseconds) | Sets how long a wait for GPU work polls before it blocks. A short poll saves the wake-up delay when the GPU finishes soon. `0` blocks at once. The default is 150. | `GpuWaitSpin.cs` |
+| `SHARPEMU_GRAPHICS_PIPELINE_LIBRARY` | `0` | `0` builds every graphics pipeline whole, with one descriptor set. By default, on a device that links `VK_EXT_graphics_pipeline_library` parts fast, the vertex input, vertex stage, pixel stage and color outputs compile once as separate parts and each pipeline links them: the vertex set is pushed, the bindless heap is set 1 and the pixel set comes from a descriptor pool. Render workers take pixel sets from their own pools, which return when the slice's submission completes. Enabling the extension changes the device, so the driver may compile every pipeline again after a change. | `VulkanVideoPresenter.PipelineLibraries.cs`, `VulkanVideoPresenter.Device.Setup.cs` |
 | `SHARPEMU_GRAPHICS_SUBGROUPS` | `0` or `1` | Set `1` to use native Vulkan subgroup operations in graphics shaders. Set `0` to use the fallback path. When unset, the presenter uses them only if the subgroup size is 32 and the vertex and fragment stages support subgroups. | `VulkanVideoPresenter.cs`, `VulkanVideoPresenter.Device.Setup.cs` |
 | `SHARPEMU_IMAGE_LOOKUP_MEMO` | `0` | `0` turns off the image lookup memo. The default keeps the result of each image lookup that found an image with the same backing, and gives it again for the same request until an image is registered or removed. | `GuestImageCache.Lookup.cs` |
 | `SHARPEMU_OCCLUSION_GPU_DUMPS` | `0` | `0` turns off GPU copies of pending occlusion results. By default, later GPU buffer reads receive these results without waiting for CPU publication. Guest memory publication remains ordered in both modes. | `VulkanVideoPresenter.Occlusion.cs`, `VulkanOcclusionQueries.GpuResults.cs` |
 | `SHARPEMU_MARK_PIXEL_PCS` | list of `pc:register` pairs | Makes the SPIR-V pixel shader write the float value 1.0 to a shader register when execution reaches the given instruction PC. Use decimal numbers, a register below 256, and a comma between pairs. It has an effect only for the shader address in `SHARPEMU_CAPTURE_PIXEL_VGPR_ADDRESS`. | `Gen5SpirvTranslator.cs` |
-| `SHARPEMU_MAX_GUEST_WORK_PER_RENDER` | number | Sets the maximum number of guest command stream slices that the Vulkan presenter runs in one render pass. The default is 1024, or 256 on macOS. The value must be more than 0. | `VulkanVideoPresenter.cs`, `VulkanVideoPresenter.CommandStream.cs` |
+| `SHARPEMU_MAX_GUEST_WORK_PER_RENDER` | number | Sets the maximum number of guest command stream slices that the Vulkan presenter runs in one render pass. The default is 1024. The value must be more than 0. | `VulkanVideoPresenter.cs`, `VulkanVideoPresenter.CommandStream.cs` |
+| `SHARPEMU_READBACK_LINEAR_IMAGES` | `0` | `0` turns off the readback of linear images. By default, a linear storage image or color target that the GPU writes is copied back to guest memory when its work completes, so a CPU thread that waits for a GPU-filled image, such as an occlusion buffer whose sentinel it wrote, continues. An image is read back in the frame the GPU first writes it, and in the frame the CPU stores into it and the next one; an image only the GPU writes is not read back again every frame. A GnmMode target that is tiled in guest memory but laid out linear on the host is never read back, because its host bytes do not follow the guest's layout. The log names the first 16 images read back (`linear image readback`). | `VulkanVideoPresenter.Scheduler.cs`, `GuestImageCache.Tracking.cs`, `HostLayoutTargets.cs` |
 | `SHARPEMU_RENDERDOC_CAPTURE_TIMEOUT_SECONDS` | number (seconds) | Set the maximum time for a RenderDoc frame capture. The emulator discards a capture that does not end in this time. The range is 1 to 120. The default is 15. | `RenderDocCapture.cs` |
 | `SHARPEMU_RENDERDOC_DLL` | path | Set the path of the RenderDoc library file. The emulator tries this path first. When unset or when the load fails, it searches the default library name and the known install paths. | `RenderDocCapture.cs` |
 | `SHARPEMU_RENDERDOC_WAIT` | number (seconds) or `enter` | Set to make the emulator wait before it starts Vulkan, so that you can attach RenderDoc. `enter` waits until you press Enter. A number waits that many seconds, from 1 to 300. Other text waits 15 seconds. | `VulkanVideoPresenter.Device.Setup.cs` |
-| `SHARPEMU_RENDER_WORK_BUDGET_MS` | number (milliseconds) | Set the maximum time that one render call uses for queued guest work in the Vulkan presenter. Work that remains stays in the queue for the next frame. `0` removes the limit. The default is 12 on macOS and 0 on other hosts. | `VulkanVideoPresenter.cs`, `VulkanVideoPresenter.RenderLoop.cs` |
+| `SHARPEMU_RENDER_WORK_BUDGET_MS` | number (milliseconds) | Set the maximum time that one render call uses for queued guest work in the Vulkan presenter. Work that remains stays in the queue for the next frame. `0` removes the limit. The default is 0. | `VulkanVideoPresenter.cs`, `VulkanVideoPresenter.RenderLoop.cs` |
 | `SHARPEMU_RESOURCE_PREFETCH` | `0` | `0` makes the shader resource materialization read each guest word one at a time. The default reads adjacent words of descriptors and the flattened resource table in one read of resident guest memory. A range that the GPU may still own is read word by word as before. | `ShaderProgramCache.cs`, `RawReadPrefetch.cs` |
-| `SHARPEMU_SHADER_MAX_STEPS` | number | Set the maximum number of dispatcher loop steps in each translated shader invocation. The limit makes sure that an incorrect loop stops. `0` removes the limit. The default is 100000. | `Gen5SpirvTranslator.cs`, `Gen5MslTranslator.cs` |
-| `SHARPEMU_SHADER_PREWARM` | `0` | `0` turns off the shader prewarm list. By default, each compute program that a game compiles is added at once to `shader-prewarm.bin` in `user/pipeline_cache/<title id>/`, so a stopped game keeps the list. At the next launch after a change of the shader translator or of the GPU driver, background threads translate the listed programs again and create their pipelines, so that the driver compiles them before the game asks for them. The `shader-prewarm.stamp` file names the build and driver that last did this; with the same build and driver, the launch does no prewarm work. The log shows `Shader prewarm done` and `Shader prewarm hits`. On Windows it replaces the cache file by default; on Linux it works beside the cache file. It has no effect with the per-shader cache files of `SHARPEMU_VK_PIPELINE_CACHE_SHARDS`. | `VulkanVideoPresenter.ShaderPrewarm.cs`, `ShaderPrewarmList.cs`, `ShaderProgramCache.cs` |
-| `SHARPEMU_SKIP_ALL_COMPUTE` | `1` | Set to `1` to make the Metal presenter skip all compute dispatches. The Vulkan presenter reads the value but does not use it. The default is off. | `MetalVideoPresenter.Compute.cs`, `VulkanVideoPresenter.cs` |
+| `SHARPEMU_SHADER_ANALYSIS_CACHE_PATH` | path or `0` | Sets the directory of the shader-analysis cache, which keeps the scalar value graph of each analysed shader as a `.graph` file so a later launch can skip the analysis. The default is `SharpEmu/shader-analysis` in the local application data folder (`%LOCALAPPDATA%` on Windows, `~/.local/share` on Linux). `0` turns the cache off. The cache removes its oldest files when it grows over 256 MiB. **Clear** next to **Compiled shader files** in Options deletes its `.graph` files. | `ScalarGraphDiskCache.cs` |
+| `SHARPEMU_SHADER_MAX_STEPS` | number | Set the maximum number of dispatcher loop steps in each translated shader invocation. The limit makes sure that an incorrect loop stops. `0` removes the limit. The default is 100000. | `Gen5SpirvTranslator.cs` |
+| `SHARPEMU_SHADER_PREWARM` (exposed in GUI) | `0` | `0` turns off the shader prewarm list. By default, each compute program that a game compiles is added at once to `shader-prewarm.bin` in `user/pipeline_cache/<title id>/`, so a stopped game keeps the list. At the next launch after a change of the shader translator or of the GPU driver, background threads translate the listed programs again and create their pipelines, so that the driver compiles them before the game asks for them. The `shader-prewarm.stamp` file names the build and driver that last did this; with the same build and driver, the launch does no prewarm work. The log shows `Shader prewarm done` and `Shader prewarm hits`. On Windows it replaces the cache file by default; on Linux it works beside the cache file. It has no effect with the per-shader cache files of `SHARPEMU_VK_PIPELINE_CACHE_SHARDS`. | `VulkanVideoPresenter.ShaderPrewarm.cs`, `ShaderPrewarmList.cs`, `ShaderProgramCache.cs` |
+| `SHARPEMU_SKIP_ALL_COMPUTE` | `1` | The Vulkan presenter reads the value `1` into a field, but no code uses that field, so it has no effect. The default is off. | `VulkanVideoPresenter.cs` |
 | `SHARPEMU_SKIP_TALL_COMPUTE_Z` | number | Effect not clear from the code. The Vulkan presenter reads the number into a field for a minimum Z group count. No code uses that field. The default is 0. | `VulkanVideoPresenter.cs` |
 | `SHARPEMU_SRT_NATIVE` | `0` | `0` turns off the compiled shader resource (SRT) evaluator. By default, the resource plan of each shader is compiled once to .NET code (`DynamicMethod`) on a low-priority background thread named `SRT compiler`; until it is ready, the plan is evaluated by the interpreter, so the first use of a new shader does not wait for the compilation. With `0`, every plan always uses the interpreter. The compiled path is also off when the runtime does not support dynamic code, for example in a Native AOT build. | `CompiledResourceEvaluator.cs`, `ShaderResourcePlan.cs`, `RuntimeValueEvaluator.cs` |
 | `SHARPEMU_SUSPEND_POINTS_IN_FLIGHT` | `0` | `0` makes `sceAgcSuspendPoint` wait until the frame boundary it queued is processed. The default lets one boundary wait behind the graphics commands, so the guest CPU can run one frame ahead. A wait that follows its own queue's store to the same label still sees that value when the title rewrites the label for the next frame (Dead Cells). | `CommandStreamQueue.cs`, `GpuCommandInterpreter.cs` |
 | `SHARPEMU_VK_DEBUG_LABELS` | `1` | Turns on Vulkan object names and command labels for capture tools. `SHARPEMU_VK_VALIDATION=1` also turns them on. Default is off because the labels add overhead to each draw. | `VulkanVideoPresenter.Draws.Recording.cs` |
 | `SHARPEMU_VK_DEVICE` | text (part of a device name) | Selects the Vulkan device whose name contains this text. The comparison ignores case. When unset, the presenter gives a score to each device and prefers a discrete GPU. | `VulkanVideoPresenter.Device.Setup.cs`, `VulkanVideoPresenter.cs` |
-| `SHARPEMU_VK_PIPELINE_CACHE_PATH` | path | Sets the path of the Vulkan pipeline cache file. The path can contain environment variables. Default is `user/pipeline_cache/<title id>/` below the application directory. The shader prewarm list goes to the same directory. With the per-shader cache, the files go to a `.shards` directory next to this path. | `VulkanVideoPresenter.Device.Setup.cs`, `VulkanPipelineCacheStorage.cs` |
-| `SHARPEMU_VK_PIPELINE_CACHE` | `0`, `1` or `file` | Selects the Vulkan pipeline cache file, which keeps the driver's compiled pipelines. `1` or `file` saves and loads one cache file. `0` keeps the cache in memory only on every system. The default is memory only on Windows: the GPU driver keeps its own shader cache on disk, and the shader prewarm list (`SHARPEMU_SHADER_PREWARM`) rebuilds it after an update. Linux keeps a cache file by default, and macOS keeps per-shader files. | `VulkanVideoPresenter.Device.Setup.cs` |
-| `SHARPEMU_VK_PIPELINE_CACHE_SHARDS` | `1` or `0` | `1` keeps one Vulkan pipeline cache file for each compute shader and for each vertex and pixel shader pair, in `vulkan-pipeline-cache.bin.shards`, also on Windows. `0` keeps the whole cache in one file. The default is `1` on macOS and `0` on other systems: NVIDIA adds about 2 MB of driver data to every cache file, so a file for each shader uses much more disk. A shard file loads when its pipeline is first created, and a save writes only the files that got new pipelines. The shard mode removes the old single file when `SHARPEMU_VK_PIPELINE_CACHE_PATH` is not set. A cache file that grows over 256 MiB is emptied, so the next launch starts it again. | `VulkanVideoPresenter.Device.Setup.cs`, `VulkanVideoPresenter.PipelineCacheShards.cs` |
+| `SHARPEMU_VK_PIPELINE_CACHE_PATH` | path | Sets the path of the Vulkan pipeline cache file. The path can contain environment variables. Default is `user/pipeline_cache/<title id>/` below the user data root. The shader prewarm list goes to the same directory. With the per-shader cache, the files go to a `.shards` directory next to this path. | `VulkanVideoPresenter.Device.Setup.cs`, `VulkanPipelineCacheStorage.cs` |
+| `SHARPEMU_VK_PIPELINE_CACHE` (exposed in GUI) | `0`, `1` or `file` | Selects the Vulkan pipeline cache file, which keeps the driver's compiled pipelines. `1` or `file` saves and loads one cache file. `0` keeps the cache in memory only on every system. The default is memory only on Windows: the GPU driver keeps its own shader cache on disk, and the shader prewarm list (`SHARPEMU_SHADER_PREWARM`) rebuilds it after an update. Linux keeps a cache file by default. | `VulkanVideoPresenter.Device.Setup.cs` |
+| `SHARPEMU_VK_PIPELINE_CACHE_SHARDS` | `1` or `0` | `1` keeps one Vulkan pipeline cache file for each compute shader and for each vertex and pixel shader pair, in `vulkan-pipeline-cache.bin.shards`, also on Windows. `0` keeps the whole cache in one file. The default is `0`: NVIDIA adds about 2 MB of driver data to every cache file, so a file for each shader uses much more disk. A shard file loads when its pipeline is first created, and a save writes only the files that got new pipelines. The shard mode removes the old single file when `SHARPEMU_VK_PIPELINE_CACHE_PATH` is not set. A cache file that grows over 256 MiB is emptied, so the next launch starts it again. | `VulkanVideoPresenter.Device.Setup.cs`, `VulkanVideoPresenter.PipelineCacheShards.cs` |
 | `SHARPEMU_VK_PIPELINE_CACHE_LEGACY_SHARDS` | `1` | `1` names the per-shader cache files by the guest shader hash. The default names them by a hash of the translated SPIR-V, so a translator change does not load records that no longer match. | `VulkanVideoPresenter.PipelineCacheShards.cs` |
-
-## Metal
-
-These variables apply to the Metal backend.
-
-| Variable | Value | Function | Code that reads it |
-| --- | --- | --- | --- |
-| `SHARPEMU_GPU_DETILE` | `0` | The Metal backend decodes supported tiled texture data on the GPU by default. Set `0` to decode all tiled textures on the CPU. | `MetalTextureSnapshots.cs`, `GuestGpuTypes.cs` |
-| `SHARPEMU_LOG_GPU_DETILE` | `1` | Writes each texture tile mode and each GPU detile decision one time to stderr. It applies to the Metal texture path only. The emulator reads the value one time at start. | `MetalTextureSnapshots.cs` |
-| `SHARPEMU_METAL_CAP_DRAWABLE` | `1` | Limits the long edge of the Metal drawable to 1920 pixels and keeps the aspect ratio. The default is off, so the drawable uses the full window pixel size. | `MetalVideoPresenter.cs` |
-| `SHARPEMU_METAL_DBG` | `solid` or `uv` | Replaces the Metal present fragment shader with a test shader. `solid` shows a green frame. `uv` shows the value of vertex attribute 0. All other values use the normal present shader. | `MetalVideoPresenter.cs` |
-| `SHARPEMU_METAL_FULL_DRAWABLE` | `1` | Cancels `SHARPEMU_METAL_CAP_DRAWABLE=1`, so the Metal drawable uses the full window pixel size. It has no effect when the cap is off. | `MetalVideoPresenter.cs` |
-| `SHARPEMU_NO_TEXTURE_SKIP` | `1` | Stops the reuse of cached texture snapshots in the Metal backend, so each texture is copied again. Use it to make sure that a snapshot is not stale. The default is off. | `MetalTextureSnapshots.cs` |
-| `SHARPEMU_REUSE_GUEST_TEXTURE_SNAPSHOTS` | `0` | The default is on. The Metal backend uses a guest texture snapshot again when the snapshot key is the same. Set to `0` to make a new snapshot each time. | `MetalTextureSnapshots.cs` |
-| `SHARPEMU_TEXTURE_DUMP_DIR` | path | Set a directory to make the Metal backend write raw texture source bytes to `.bin` files. The file name contains the address, size, pitch, format and tile mode. The limit is 200 files. | `MetalTextureSnapshots.cs` |
-| `SHARPEMU_TEXTURE_LINEAR_DUMP_DIR` | path | Set a directory to make the Metal backend write the linear texture bytes to `.linear.bin` files. The file name contains the address, size, pitch, format and tile mode. The limit is 200 files. | `MetalTextureSnapshots.cs` |
-| `SHARPEMU_TRACE_STORAGE_IMAGE_INIT_ADDRESS` | hex address | The Metal backend writes an `agc.storage_initial_data` trace line when it makes the texture at this guest address. The line shows the upload state and the read result of the initial data. | `MetalTextureSnapshots.cs` |
 
 ## Audio and video
 
@@ -183,10 +257,10 @@ These variables apply to audio output and video playback.
 | Variable | Value | Function | Code that reads it |
 | --- | --- | --- | --- |
 | `SHARPEMU_ALSA_DEVICE` | text (ALSA device name) | Sets the ALSA playback device on Linux. The default is `default`. | `PosixAlsaAudioStream.cs` |
-| `SHARPEMU_AUDIO_LATENCY_MS` | number (milliseconds) | Sets the target depth of the SDL audio queue, which is the playback latency. The default is 60. Values of zero or less use the default. | `SdlHostAudio.cs` |
-| `SHARPEMU_BINK_MODE` | text (`native`, `ffmpeg`, `dummy`, `skip`, `guest`) | Selects how the emulator handles Bink movies. `guest` is the default, including for unknown values. `native` or `ffmpeg` decodes on the host. `dummy` shows a placeholder frame; `skip` skips the movie. Runtime startup logs `BINK VIDEO PLAYBACK MODE: HOST`, `GUEST`, `SKIP`, or `DUMMY`. This reports the selected mode, not decoder success. | `HostMovieBridge.cs`, `SharpEmuRuntime.cs` |
+| `SHARPEMU_AUDIO_LATENCY_MS` (exposed in GUI) | number (milliseconds) | Sets the target depth of the SDL audio queue, which is the playback latency. The default is 60. Values of zero or less use the default. | `SdlHostAudio.cs` |
+| `SHARPEMU_BINK_MODE` (exposed in GUI) | text (`native`, `ffmpeg`, `dummy`, `skip`, `guest`) | Selects how the emulator handles Bink movies. `guest` is the default, including for unknown values. `native` or `ffmpeg` decodes on the host. `dummy` shows a placeholder frame; `skip` skips the movie. Runtime startup logs `BINK VIDEO PLAYBACK MODE: HOST`, `GUEST`, `SKIP`, or `DUMMY`. This reports the selected mode, not decoder success. | `HostMovieBridge.cs`, `SharpEmuRuntime.cs` |
 | `SHARPEMU_LOG_MOVIE_SYNC` | `1` | Records the difference between the movie clock and the guest audio position during movie playback. The emulator reads the value one time at start. | `MediaFramePlayback.cs` |
-| `SHARPEMU_MOVIE_CLOCK` | `wall` | Sets the time base for host-decoded movie playback. By default, playback follows the guest audio clock and uses the wall clock when no guest audio flows. `wall` makes playback always use the wall clock. | `MediaFramePlayback.cs` |
+| `SHARPEMU_MOVIE_CLOCK` (exposed in GUI) | `wall` | Sets the time base for host-decoded movie playback. By default, playback follows the guest audio clock and uses the wall clock when no guest audio flows. `wall` makes playback always use the wall clock. | `MediaFramePlayback.cs` |
 | `SHARPEMU_TRACE_AVPLAYER_IMAGES` | `1` | Traces video buffer addresses, the first 16 frame payload summaries per process, and stop, close, and end-of-stream transitions. Transition lines include the video timestamp and playback clock. It also enables video buffer range checks for image traces. The default is off. | `AvPlayerExports.cs` |
 
 ## Input
@@ -210,8 +284,9 @@ These variables apply to guest memory and guest code execution.
 | `SHARPEMU_DISABLE_GUEST_ALLOCATOR_HOLE_RECOVERY` | `1` | Stops the Windows fault recovery for a guest allocator that reads an empty pool node. The default recovers the fault and continues at the allocator fallback code. | `DirectExecutionBackend.Exceptions.cs` |
 | `SHARPEMU_DISABLE_MITIGATION_RELAUNCH` | `1` | Stops the Windows relaunch of the emulator as a child process with Control Flow Guard and CET shadow stacks off. The default starts the child process. | `Program.cs`, `SelfLoader.cs` |
 | `SHARPEMU_DISABLE_NATIVE_GUEST_WORKERS` | `1` | Stops the use of native worker threads for guest thread execution on Windows. The default uses the native workers. | `DirectExecutionBackend.NativeWorker.cs` |
-| `SHARPEMU_DISABLE_POSIX_SIGNALS` | `1` | Does not install the POSIX signal handlers on Linux and macOS. The emulator then cannot recover guest faults. | `DirectExecutionBackend.PosixSignals.cs` |
+| `SHARPEMU_DISABLE_POSIX_SIGNALS` | `1` | Does not install the POSIX signal handlers on Linux. The emulator then cannot recover guest faults. | `DirectExecutionBackend.PosixSignals.cs` |
 | `SHARPEMU_DISABLE_RAW_HANDLER` | `1` | Does not install the raw vectored exception handler on Windows. On POSIX hosts it stops the raw sentinel recovery. The default keeps the two functions on. | `DirectExecutionBackend.Exceptions.cs`, `DirectExecutionBackend.PosixSignals.cs` |
+| `SHARPEMU_HOST_WORKER_PRIORITY` | `0` | `0` leaves the emulator's render, resolve, GPU priority and staging copy worker threads at normal priority without an affinity mask. The default raises them above normal priority and keeps them off the render core when the render core reservation is active, so spinning guest threads do not delay them. | `HostLaneReservation.cs` |
 | `SHARPEMU_IGNORE_INT41` | `0` or `false` | The fault handler skips guest `int 0x41` instructions and continues at the next instruction by default. Set `0` or `false` to stop this recovery. The emulator shows a warning for the first 16 traps and then for each 65536th trap. | `DirectExecutionBackend.cs`, `DirectExecutionBackend.Exceptions.cs` |
 | `SHARPEMU_IGNORE_STACK_CHK` | `1` | Recovers from a guest stack-protector failure call (NID `Ou3iL1abvng`) when a UD2 instruction follows the call. The emulator sets the return address to the function epilogue 20 bytes before. It does this only when the code bytes match the known pattern. | `DirectExecutionBackend.Imports.cs` |
 | `SHARPEMU_LAZY_RESERVE_PRIME_MB` | number | Sets the number of megabytes that the emulator commits at the start of each reserve-only memory region. The default is 64 and the maximum is 4096. The value 0 turns the initial commit off. | `PhysicalVirtualMemory.cs` |
@@ -237,7 +312,7 @@ These variables apply to the program loader and the module system.
 | `SHARPEMU_AMPR_REINDEX` | `1` | Ignores the AMPR index cache on disk and scans the application file tree again. Use it after manual changes to the application files. | `AmprFileRegistry.cs` |
 | `SHARPEMU_APP0_DIR` | path (directory) | Sets the host directory for the guest `/app0` mount. The default is the directory of the loaded executable. The directory name also identifies the per-application data folders. | `SharpEmuRuntime.cs`, `KernelMemoryCompatExports.cs`, `AppContentExports.cs` |
 | `SHARPEMU_DEVLOG_APP_DIR` | path (directory) | Sets the host directory for the guest devlog application path. The default is `user/game_logs/<title id>/devlog/app` below the emulator directory. | `KernelMemoryCompatExports.cs` |
-| `SHARPEMU_DISABLE_RED_ZONE_PATCH` | `1` | Stops the load-time patch that protects the guest stack red zone on Windows and macOS. The default applies the patch. The vector store split for Rosetta stays on when it is necessary. | `GuestRedZonePatcher.cs` |
+| `SHARPEMU_DISABLE_RED_ZONE_PATCH` | `1` | Stops the load-time patch that protects the guest stack red zone on Windows. The default applies the patch. On Linux, the loader does not apply this patch. | `GuestRedZonePatcher.cs` |
 | `SHARPEMU_DOWNLOAD0_DIR` | path (directory) | Sets the host directory for the guest `/download0` mount. The default is a `download0` folder in the per-application writable directory. The emulator sets the variable to the default when it is not set. | `KernelMemoryCompatExports.cs` |
 | `SHARPEMU_GUEST_ARGS` | text | Adds arguments to the guest process entry frame after the image name. White space divides the arguments. The emulator uses only the first two. | `CpuDispatcher.cs` |
 | `SHARPEMU_HOSTAPP_DIR` | path | Sets the host directory for the guest `/hostapp` mount. The default is `user/game_logs/<title id>/hostapp` below the emulator directory. The emulator makes the directory if it is absent. | `KernelMemoryCompatExports.cs`, `KernelGameLogPathTests.cs` |
@@ -326,7 +401,7 @@ Each variable adds one group of messages to the log. The default is off.
 | `SHARPEMU_LOG_USER_SERVICE` | `1` | Writes trace lines for the user service library calls. Each line includes the guest return address of the call. | `UserServiceExports.cs` |
 | `SHARPEMU_LOG_USLEEP` | `1` | Writes trace lines for `usleep` calls: the first 32 calls and then every 10000th call. It also stops the native inline `usleep` stub and the leaf import path, so each call goes through the traced handler. | `DirectExecutionBackend.cs`, `DirectExecutionBackend.Imports.cs`, `KernelRuntimeCompatExports.cs` |
 | `SHARPEMU_DISABLE_EXTRQ_REWRITE` | `1` | Disables the load-time EXTRQ rewrite on hosts without SSE4a. Uses fault-time recovery instead. The default is off. | `Sse4aExtractRewrite.cs` |
-| `SHARPEMU_LOG_VIDEOOUT_FPS` | `1` | Writes periodic frame rate lines with flip, present, draw, pipeline, and buffer pool counts. `SHARPEMU_PROFILE_PERFORMANCE=1` starts the same output. | `VideoOutExports.cs` |
+| `SHARPEMU_LOG_VIDEOOUT_FPS` (exposed in GUI) | `1` | Writes periodic frame rate lines with flip, present, draw, pipeline, and buffer pool counts. `SHARPEMU_PROFILE_PERFORMANCE=1` starts the same output. | `VideoOutExports.cs` |
 | `SHARPEMU_LOG_VIDEOOUT` | `1` | Writes `videoout.` trace lines for the video output calls, such as flip events and frame dumps. The default is off. | `VideoOutExports.cs` |
 | `SHARPEMU_LOG_VK_RESOURCES` | `1` | Writes a `vk.global_buffer` trace line one time for each new guest buffer that the Vulkan presenter binds. The line shows the base address and the size. | `VulkanVideoPresenter.Draws.Recording.cs`, `VulkanVideoPresenter.GuestBuffers.cs` |
 | `SHARPEMU_LOG_VMEM` | `1` | Writes debug lines for guest virtual memory operations and `[HOSTMEM]` lines for host memory operations. Adds `[VMEM][ALLOC_SEARCH]` for the first 64 searches, with up to five rejected candidates per search, and `[VMEM][ALLOC_FAILURE]` for the first 32 allocation exceptions, including the phase and stack. The default is off. | `PhysicalVirtualMemory.cs`, `KernelVirtualRangeAllocator.cs`, `HostMemory.cs`, `PosixHostMemory.cs` |
@@ -360,7 +435,7 @@ Each variable records a detailed sequence of events. Traces can be large.
 | `SHARPEMU_TRACE_FRAME_PACKETS` | `1` | Writes a `[FRAMEPKT]` line at a flip with the draw count and the dispatch count of the frame. It shows the first 8 flips, each 60th flip, and each flip that has no draws. Default is off. | `AgcExports.CommandStream.cs` |
 | `SHARPEMU_TRACE_GPU_MEMORY_ADDRESS` | hex address or `auto` | Writes `[GPU][MEMORY_TRACE]` lines for GPU memory events that touch the page of the given address. The value `auto` selects the page of the first device-address fault. Default is off. | `GuestGpuMemoryHook.cs` |
 | `SHARPEMU_TRACE_GPU_READS` | `1` | Writes a `[GPU][SYNC_READ]` line with the shader hash, the stage and the address when a shader resource read must wait for GPU-written memory. It writes one line for each shader and page, and a maximum of 64 lines. | `GpuReadTrace.cs`, `VulkanVideoPresenter.Pipelines.cs` |
-| `SHARPEMU_TRACE_GUEST_IMAGES` | `1`, `present` or `every:N[@M]` | `1` and `present` write Vulkan present trace lines (`vk.present_taken`, `vk.present_dropped`, `vk.present_sample`) and up to 64 Metal `agc.texture_fallback` lines. The code reads the `every:N[@M]` form, but no code uses the result. Default is off. | `VulkanVideoPresenter.Draws.Recording.cs`, `VulkanVideoPresenter.Present.cs`, `MetalTextureSnapshots.cs` |
+| `SHARPEMU_TRACE_GUEST_IMAGES` | `1`, `present` or `every:N[@M]` | `1` and `present` write Vulkan present trace lines (`vk.present_taken`, `vk.present_dropped`, `vk.present_sample`). The code reads the `every:N[@M]` form, but no code uses the result. Default is off. | `VulkanVideoPresenter.Draws.Recording.cs`, `VulkanVideoPresenter.Present.cs` |
 | `SHARPEMU_TRACE_GUEST_IMAGE_ADDRS` | list of hex addresses or `*` | The guest image write tracker writes `[WT][LIFETIME]` lines for each tracked range that contains a listed address. `*` selects all ranges. The Vulkan presenter also reads the list, but no code uses that filter. | `GuestImageWriteTracker.cs`, `VulkanVideoPresenter.Draws.Recording.cs` |
 | `SHARPEMU_TRACE_GUEST_IMAGE_FORMAT` | text (Vulkan format name) | Effect not clear from the code. The Vulkan presenter keeps the name for an image filter that compares the image format, but no code calls the filter. | `VulkanVideoPresenter.Draws.Recording.cs` |
 | `SHARPEMU_TRACE_GUEST_IMAGE_HEIGHT` | number | Effect not clear from the code. The Vulkan presenter keeps the number for an image filter that compares the image height, but no code calls the filter. | `VulkanVideoPresenter.Draws.Recording.cs` |
@@ -390,6 +465,8 @@ Each variable writes data to files.
 | `SHARPEMU_LOG_DISASM` | `1` | Writes guest disassembly to stderr when a guest fault, an abort or an illegal instruction occurs. It shows the code before the fault address, before the stack return address and before three frame return addresses. | `DirectExecutionBackend.Exceptions.cs` |
 | `SHARPEMU_LOG_IL2CPP_EXCEPTION` | `1` | Writes a diagnostic dump when the guest calls the unresolved import with NID `cfwBSQyr5Ys`. The dump shows the registers, the code pointers on the stack and the frame pointer chain. The emulator writes a maximum of 4 dumps. | `DirectExecutionBackend.Imports.cs` |
 | `SHARPEMU_LOG_POINTER_WINDOWS` | list of hex addresses | Writes a memory window for each address when a guest access fault occurs. Use a comma between the addresses. The window size is 0x80 bytes unless `SHARPEMU_LOG_POINTER_WINDOW_SIZE` sets a different size. | `DirectExecutionBackend.Exceptions.cs` |
+| `SHARPEMU_SNAPSHOT_COMPUTE_HASH` | shader hash | Takes image snapshots before and after the first two Vulkan dispatches of the compute shader with this hash. See [selected draw snapshots](image-clear-tracing.md#selected-draw-snapshots). | `VulkanVideoPresenter.ImageSnapshots.cs` |
+| `SHARPEMU_SNAPSHOT_PIXEL_HASH` | shader hash | Takes input and output image snapshots of the first two Vulkan draws with this pixel shader hash. The default is off. See [selected draw snapshots](image-clear-tracing.md#selected-draw-snapshots) for limits and output paths. | `VulkanVideoPresenter.ImageSnapshots.cs` |
 | `SHARPEMU_SHADER_SPIRV_DUMP_DIR` | path | Set a directory for shader dumps. When set, the Vulkan presenter writes each SPIR-V module to a numbered `.spv` file. The `SHARPEMU_DUMP_SPIRV=1` dumps also use this directory. Their default is `shader-dumps` next to the executable. | `VulkanVideoPresenter.Pipelines.cs`, `ShaderProgramCache.cs`, `VulkanVideoPresenter.Device.Setup.cs` |
 | `SHARPEMU_SWAPCHAIN_DUMP_EVERY` | number (frames) | Set a number N to trace the presented swapchain image at each Nth present. This operates only when `SHARPEMU_TRACE_GUEST_IMAGES` is `1` or `present`. The default is 0, which traces only the first presented image. | `VulkanVideoPresenter.Present.Frames.cs`, `VulkanVideoPresenter.Draws.Recording.cs` |
 
@@ -422,6 +499,12 @@ prefetch waits and validation, synchronous resolution, and shared-gate waits.
 They also measure program decoding, planning, layout/request construction,
 translation, and compute pipeline waiting. Detail scopes require an active
 render profile scope on the calling thread.
+
+Resolve workers keep phase counters per thread and aggregate them at reporting
+time. `[PERF][SUBMIT_SITE]` and `[PERF][PROMOTION_SITE]` sample one call stack
+per 64 calls. Their `n` values are estimates; `sample_every` records the sampling
+interval. Profiling still adds work, so compare gameplay FPS with the same
+profiling settings on both machines, and confirm results with profiling off.
 
 `[PERF][COMPUTE_COMPILE]` reports cumulative asynchronous compile start delay,
 compiler-slot wait, pipeline-cache load, driver compilation, and result
@@ -530,11 +613,10 @@ Only the tests, the scripts or the build tools read these variables.
 | `SHARPEMU_NATIVE_RETURN_SMOKE_WORKER` | `1` | The native return smoke test sets this for its child process. The value `1` tells the child to run the synthetic guest entry. Do not set it manually. | `Gen5NativeReturnSmokeTests.cs` |
 | `SHARPEMU_SOCKET_CONNECTION_TEST_WORKER` | `1` | The kernel socket connection test sets this for its child process. The value `1` tells the child to do the connect sequence. Do not set it manually. | `KernelSocketConnectionTests.cs` |
 | `SHARPEMU_TEST_REFERENCE_SPIRV_DIR` | path | Sets the directory that contains the reference compiled shader files for the GPU image tests. The tests make sure that each file has the recorded SHA-256 hash. When unset, these tests skip the reference comparison. | `ImageTestHarness.cs` |
-| `SHARPEMU_TEST_REQUIRE_DEVICE` | `1` | Makes a GPU test fail when a Vulkan or Metal device or a device feature is missing. Default is to skip the test. | `ImageTestHarness.cs`, `MetalRuntimeTests.cs` |
+| `SHARPEMU_TEST_REQUIRE_DEVICE` | `1` | Makes a GPU test fail when a Vulkan device or a device feature is missing. Default is to skip the test. | `ImageTestHarness.cs` |
 | `SHARPEMU_TEST_REQUIRE_REFERENCE_SPIRV` | `1` | Makes a test fail when a reference shader file, its directory, or a necessary device is missing. Default is to skip the test. | `ImageTestHarness.cs`, `GuestFaultWorker.cs` |
 | `SHARPEMU_TEST_VK_VALIDATION` | `1` | Loads the Vulkan validation layer in the headless test device and prints the validation messages. Default is off. | `HeadlessVulkan.cs` |
 | `SHARPEMU_THREAD_CONTEXT_TEST_WORKER` | `1` | The Windows thread context capture test sets this for its child process. The value `1` tells the child to do the capture sequence. Do not set it manually. | `WindowsThreadContextCaptureTests.cs`, `GuestFaultWorker.cs` |
-| `SHARPEMU_UPDATE_GOLDENS` | `1` | Makes the Metal golden tests write the generated shader text to the golden files in the source tree. Default is to compare the generated text with the golden files. | `MslGoldenTests.cs` |
 
 ## Variables that the code reads but does not use
 

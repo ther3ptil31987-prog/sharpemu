@@ -79,6 +79,45 @@ public static class GuestGpuMemoryHook
         }
 
         _current = memory;
+        if (memory != null)
+        {
+            (ulong Address, ulong Size)[] lazy;
+            lock (_lazyRanges)
+            {
+                lazy = _lazyRanges.Values.ToArray();
+            }
+
+            foreach (var (address, size) in lazy)
+            {
+                memory.RegisterLazyRange(address, size);
+            }
+        }
+    }
+
+    private static readonly Dictionary<int, (ulong Address, ulong Size)> _lazyRanges = new();
+
+    // A lazily backed aperture; size zero forgets the aperture again.
+    public static void NoteLazyRange(int id, ulong address, ulong size)
+    {
+        (ulong Address, ulong Size) previous = default;
+        lock (_lazyRanges)
+        {
+            _lazyRanges.Remove(id, out previous);
+            if (size != 0 && IsWithinGpuAddressSpace(address, size))
+            {
+                _lazyRanges[id] = (address, size);
+            }
+        }
+
+        if (previous.Size != 0)
+        {
+            _current?.UnregisterLazyRange(previous.Address, previous.Size);
+        }
+
+        if (size != 0 && IsWithinGpuAddressSpace(address, size))
+        {
+            _current?.RegisterLazyRange(address, size);
+        }
     }
 
     public static bool IsWithinGpuAddressSpace(ulong address, ulong size)
@@ -141,6 +180,15 @@ public static class GuestGpuMemoryHook
         return false;
     }
 
+    // Capture the attached manager once, and hold its reservation through the landed notification.
+    internal static GuestGpuMemory.ManagedWriteLease BeginCpuWrite(ulong address, ulong size, bool emulatorWrite = false)
+    {
+        if (size == 0) return default;
+        if (_current is { } current) return current.BeginManagedWrite(address, size, emulatorWrite);
+        GuestImageWriteTracker.NotifyManagedWrite(address, size);
+        return default;
+    }
+
     // Notify the stores before a managed write changes guest memory.
     public static void MarkCpuWrite(ulong address, ulong size)
     {
@@ -163,6 +211,22 @@ public static class GuestGpuMemoryHook
         current.MarkCpuWriteLanded(address, size);
     }
 
+    public static void PrepareEmulatorWrite(ulong address, ulong size)
+    {
+        if (size != 0 && _current is { } current)
+        {
+            current.PrepareEmulatorWrite(address, size);
+        }
+    }
+
+    public static void NoteEmulatorWrite(ulong address, ulong size)
+    {
+        if (size != 0 && _current is { } current)
+        {
+            current.NoteEmulatorWrite(address, size);
+        }
+    }
+
     // Shutdown can skip disposal. Report the counts once for each attached session.
     public static bool TryTakeShutdownSummary(out string summary)
     {
@@ -178,5 +242,6 @@ public static class GuestGpuMemoryHook
     }
 
     public static string GetSummary() =>
-        $"gpu_memory: mapped={Interlocked.Read(ref _mapped)} unmapped={Interlocked.Read(ref _unmapped)} faults_resolved={Interlocked.Read(ref _faultsResolved)} faults_declined={Interlocked.Read(ref _faultsDeclined)}";
+        $"gpu_memory: mapped={Interlocked.Read(ref _mapped)} unmapped={Interlocked.Read(ref _unmapped)} faults_resolved={Interlocked.Read(ref _faultsResolved)} faults_declined={Interlocked.Read(ref _faultsDeclined)} " +
+        $"mapped_content_invalidations={GuestGpuMemory.MappedContentInvalidations} mapped_content_owned={GuestGpuMemory.MappedContentOwned} lazy_covered_writes={GuestGpuMemory.LazyCoveredWrites}";
 }

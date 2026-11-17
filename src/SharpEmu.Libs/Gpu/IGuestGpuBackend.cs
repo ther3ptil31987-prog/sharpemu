@@ -9,7 +9,7 @@ namespace SharpEmu.Libs.Gpu;
 
 /// <summary>
 /// The guest-GPU backend seam: everything the AGC/VideoOut export layers need from a
-/// host renderer, expressed in guest-domain terms so Vulkan, Metal, and DX12 backends
+/// host renderer, expressed in guest-domain terms so Vulkan and DX12 backends
 /// can each translate to their native API. Two rules keep it that way: no host-API
 /// value (formats, blend enums, barrier or pass concepts) may cross this interface,
 /// and submission is coarse-grained — synchronization is a backend-internal concern.
@@ -19,8 +19,7 @@ namespace SharpEmu.Libs.Gpu;
 /// </summary>
 internal interface IGuestGpuBackend
 {
-    /// <summary>Human-readable name of this backend ("Metal", "Vulkan"), shown in
-    /// the window title on macOS where either backend can run.</summary>
+    /// <summary>Human-readable name of this backend ("Vulkan").</summary>
     string BackendName { get; }
 
     bool LinkedShaderCallsSupported => false;
@@ -30,6 +29,14 @@ internal interface IGuestGpuBackend
 
     // Compiles one permutation of a program over its resource plan and binding layout.
     bool TryCompileProgram(ShaderCompileRequest request, out IGuestCompiledShader? shader, out string error);
+
+    // The shader of a translation the translation disk cache kept (TranslationDiskCache); null when the backend keeps none.
+    IGuestCompiledShader? CreateCachedShader(byte[] payload, uint? inputLocationMask) => null;
+
+    // The vertex stage a tessellated pipeline requires and the control stage that feeds the guest's hull factors to the tessellator.
+    (IGuestCompiledShader Vertex, IGuestCompiledShader Control) CompileTessellationBridge(
+        SharpEmu.ShaderCompiler.Resources.BindingLayout layout, Gen5TessellationDomain domain) =>
+        throw new NotSupportedException($"The {BackendName} backend does not support merged tessellation.");
 
     /// <summary>Returns the backend's no-color-output fragment shader.</summary>
     IGuestCompiledShader GetDepthOnlyFragmentShader();

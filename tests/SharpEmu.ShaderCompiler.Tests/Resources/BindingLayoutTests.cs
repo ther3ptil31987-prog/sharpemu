@@ -10,6 +10,43 @@ namespace SharpEmu.ShaderCompiler.Tests.Resources;
 
 public sealed class BindingLayoutTests
 {
+    [Fact]
+    public void TableBlocksAndTessellationKeepTheirShaderDataRangesSeparate()
+    {
+        var info = new ShaderResourceInfo { Buffers = Enumerable.Range(0, 5).Select(_ => new BufferResource { Read = true }).ToList() };
+        var layout = BindingLayout.Allocate(info, [0u], false, false, true,
+            usesDispatchThreadLimits: true, callArgumentCount: 2, callTargetCount: 1,
+            tableBlock: true, usesBufferLengths: true, usesTessellationData: true);
+        Assert.True(layout.UsesTableBlock);
+        Assert.False(layout.UsesBufferLengths);
+        Assert.Equal(0u, layout.MemoryOffsetCount);
+        Assert.Equal(5u, layout.DispatchThreadLimitsDword);
+        Assert.Equal(8u, layout.TessellationDataDword);
+        Assert.Equal(8u + Gen5TessellationData.DwordCount, layout.MipStatisticsDword);
+        Assert.Equal(14u + Gen5TessellationData.DwordCount, layout.ShaderDataDwordCount);
+        BindingLayoutValidator.Validate(layout, info, [0u], false, false, true, Hash, ShaderStage.Compute);
+    }
+
+    [Theory]
+    [InlineData(0u)]
+    [InlineData(30u)]
+    public void ExplicitBufferLengthsHaveTheirOwnShaderDataAndLeaveTheDefaultLayoutUnchanged(uint cursor)
+    {
+        var info = new ShaderResourceInfo { Buffers = Enumerable.Range(0, 5).Select(_ => new BufferResource { Read = true }).ToList() };
+        var plain = BindingLayout.Allocate(info, [0u], false, false, true, cursor, usesDispatchThreadLimits: true);
+        var explicitLengths = BindingLayout.Allocate(info, [0u], false, false, true, cursor,
+            usesDispatchThreadLimits: true, usesBufferLengths: true);
+        Assert.False(plain.UsesBufferLengths);
+        Assert.Equal(8u, plain.ShaderDataDwordCount);
+        Assert.True(explicitLengths.UsesBufferLengths);
+        Assert.Equal(5u, explicitLengths.BufferLengthsDword);
+        Assert.Equal(10u, explicitLengths.DispatchThreadLimitsDword);
+        Assert.Equal(13u, explicitLengths.ShaderDataDwordCount);
+        Assert.Equal(cursor == 0, explicitLengths.UsesPushData);
+        Assert.NotEqual(plain, explicitLengths);
+        BindingLayoutValidator.Validate(explicitLengths, info, [0u], false, false, true, Hash, ShaderStage.Compute);
+    }
+
     [Theory]
     [InlineData(0u)]
     [InlineData(30u)]
@@ -26,6 +63,29 @@ public sealed class BindingLayoutTests
         BindingLayoutValidator.Validate(limits, info, [0u], false, false, true, Hash, ShaderStage.Compute);
         Assert.Throws<ResourcePlanException>(() =>
             BindingLayoutValidator.Validate(limits, info, [0u], false, false, true, Hash, ShaderStage.Pixel));
+    }
+
+    // A program with an indexed buffer access carries every buffer binding's stride, two to a dword, after the store
+    // coverage bases; a program without one carries none.
+    [Fact]
+    public void IndexedBuffersCarryTheirStridesTwoToADword()
+    {
+        var info = new ShaderResourceInfo
+        {
+            Buffers = Enumerable.Range(0, 3).Select(_ => new BufferResource { Read = true }).ToList(),
+            UsesIndexedBuffers = true,
+        };
+        var indexed = BindingLayout.Allocate(info, [0u], false, false, false);
+        Assert.Equal(3u, indexed.BufferStrideCount);
+        Assert.Equal(indexed.CallTargetsDword + indexed.CallTargetCount * 2, indexed.BufferStridesDword);
+        Assert.Equal(indexed.BufferStridesDword + 2, indexed.ShaderDataDwordCount);
+        BindingLayoutValidator.Validate(indexed, info, [0u], false, false, false, Hash, ShaderStage.Compute);
+
+        info.UsesIndexedBuffers = false;
+        var plain = BindingLayout.Allocate(info, [0u], false, false, false);
+        Assert.Equal(0u, plain.BufferStrideCount);
+        Assert.Equal(plain.BufferStridesDword, plain.ShaderDataDwordCount);
+        Assert.NotEqual(indexed, plain);
     }
 
     [Fact]
@@ -298,6 +358,40 @@ public sealed class BindingLayoutTests
         Assert.Equal(6u, withBase.MemoryOffsetDword);
         withBase.AdvancePushData(ref cursor);
         Assert.Equal(6u, cursor);
+    }
+
+    // Data placed at the top of the push range takes one place for every cursor it fits above (a vertex stage after pixel
+    // stages of different sizes) and the shader data block above that, exactly where the cursor's own place would not fit; each
+    // layout validates from its own allocation cursor.
+    [Fact]
+    public void TopPlacedDataTakesOnePlaceForEveryCursorItFitsAbove()
+    {
+        static uint[] UserData(uint count) => Enumerable.Range(0, (int)count).Select(index => (uint)index).ToArray();
+        var info = new ShaderResourceInfo();
+        var layouts = new[] { 0u, 4u, 13u, 23u }
+            .Select(cursor => BindingLayout.Allocate(info, UserData(9), false, false, false, cursor, pushDataAtTop: true)).ToArray();
+        foreach (var layout in layouts)
+        {
+            Assert.True(layout.UsesPushData);
+            Assert.Equal(23u, layout.PushDataStartDword);
+            Assert.Equal(23u, layout.AllocationCursor);
+            Assert.Equal(layouts[0], layout);
+            BindingLayoutValidator.Validate(layout, info, UserData(9), false, false, false, Hash, ShaderStage.Vertex);
+        }
+
+        Assert.Equal(23u, layouts[0].PushStartFor(0));
+        Assert.Equal(23u, layouts[0].PushStartFor(23));
+        Assert.Equal(PushData.NoStart, layouts[0].PushStartFor(24));
+        var spill = BindingLayout.Allocate(info, UserData(9), false, false, false, 24, pushDataAtTop: true);
+        Assert.False(spill.UsesPushData);
+        Assert.NotNull(spill.Find(DescriptorBindingKind.ShaderData));
+        Assert.Equal(PushData.DwordCount, spill.AllocationCursor);
+        BindingLayoutValidator.Validate(spill, info, UserData(9), false, false, false, Hash, ShaderStage.Vertex);
+        Assert.False(BindingLayout.Allocate(info, UserData(9), false, false, false, 24).UsesPushData);
+
+        // Without the top placement each cursor is its own place, and a layout of the same place but the other rule differs.
+        Assert.Equal(4u, BindingLayout.Allocate(info, UserData(9), false, false, false, 4).PushDataStartDword);
+        Assert.NotEqual(layouts[0], BindingLayout.Allocate(info, UserData(9), false, false, false, 23));
     }
 
     // A stage that spilled at cursor 13 is valid; validation must not reallocate at zero.

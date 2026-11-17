@@ -30,6 +30,7 @@ public sealed class GuestRedZonePatcherTests
     [InlineData("554889E574044883EC20488B45F8C3", false)]
     [InlineData("554889E54883EC0875FA488B45F8C3", false)]
     [InlineData("554889E5FFE0488B45F8C3", false)]
+    [InlineData("554889E55353535353488945D0FFE0C3", true)]
     [InlineData("554889E5488D45F8C3", false)]
     [InlineData("554889E5904883EC40488B45F8C3", false)]
     [InlineData("554889E55353535353488945D0C3", true)]
@@ -53,7 +54,7 @@ public sealed class GuestRedZonePatcherTests
     [InlineData(true)]
     public void GroupingPreservesIncomingBranchFromAnotherFunction(bool separateSegment)
     {
-        if ((!OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS()) ||
+        if (!OperatingSystem.IsWindows() ||
             RuntimeInformation.ProcessArchitecture != Architecture.X64) return;
         using var memory = new PhysicalVirtualMemory();
         var imageBase = memory.AllocateAt(0, 0x10000);
@@ -136,7 +137,7 @@ public sealed class GuestRedZonePatcherTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public unsafe void PatchesWindowsAndMacOsLeafFunctionWhileLeavingLinuxUnchanged(bool framePointer)
+    public unsafe void PatchesWindowsLeafFunctionWhileLeavingLinuxUnchanged(bool framePointer)
     {
         if (RuntimeInformation.ProcessArchitecture != Architecture.X64)
             return;
@@ -189,7 +190,7 @@ public sealed class GuestRedZonePatcherTests
         var result = GuestRedZonePatcher.Patch(memory, memory, headers, imageBase, imageSize);
         var patched = new byte[function.Length];
         Assert.True(memory.TryRead(imageBase, patched));
-        if (OperatingSystem.IsWindows() || OperatingSystem.IsMacOS())
+        if (OperatingSystem.IsWindows())
         {
             Assert.Equal(1, result.RedZoneFunctions);
             Assert.Equal(1, result.PatchedSites);
@@ -248,7 +249,7 @@ public sealed class GuestRedZonePatcherTests
         ];
 
         using var image = PatchedImage.Create(function, [(0x40, value)]);
-        if (OperatingSystem.IsWindows() || OperatingSystem.IsMacOS())
+        if (OperatingSystem.IsWindows())
         {
             Assert.Equal(1, image.Result.PatchedSites);
             Assert.Equal(0xE9, image.ReadByte(15));
@@ -277,7 +278,7 @@ public sealed class GuestRedZonePatcherTests
         ];
 
         using var image = PatchedImage.Create(function, [(0x2000, 7u)]);
-        if (OperatingSystem.IsWindows() || OperatingSystem.IsMacOS())
+        if (OperatingSystem.IsWindows())
         {
             Assert.Equal(1, image.Result.PatchedSites);
             Assert.Equal(0xE9, image.ReadByte(22));
@@ -309,7 +310,7 @@ public sealed class GuestRedZonePatcherTests
 
         using var image = PatchedImage.Create(function, [(0x2000, 7u)]);
         Assert.Equal(0, image.Result.PatchedSites);
-        if (OperatingSystem.IsWindows() || OperatingSystem.IsMacOS())
+        if (OperatingSystem.IsWindows())
         {
             Assert.Equal(1, image.Result.RedZoneFunctions);
             Assert.Equal(1, image.Result.UnrelocatableSites);
@@ -383,7 +384,7 @@ public sealed class GuestRedZonePatcherTests
 
         var function = BuildSwitchFunction(spill: [0x48, 0x89, 0x4C, 0x24, 0xD0]);
         using var image = PatchedImage.Create(function.Code, [(0x2100, 100u)], (SwitchTableOffset, function.Table));
-        if (OperatingSystem.IsWindows() || OperatingSystem.IsMacOS())
+        if (OperatingSystem.IsWindows())
         {
             Assert.Equal(1, image.Result.RedZoneFunctions);
             Assert.Equal(0, image.Result.UnrelocatableSites);
@@ -413,11 +414,92 @@ public sealed class GuestRedZonePatcherTests
 
         var function = BuildSwitchFunction(spill: [0x48, 0x89, 0xD1]);
         using var image = PatchedImage.Create(function.Code, [(0x2100, 100u)], (SwitchTableOffset, function.Table));
-        if (OperatingSystem.IsWindows() || OperatingSystem.IsMacOS())
+        if (OperatingSystem.IsWindows())
         {
             Assert.Equal(0, image.Result.PatchedSites);
             Assert.True(image.Result.IndirectBranchRefusals >= 4);
         }
+    }
+
+    // A switch inside a loop loads its table address once, before the loop. Each case's short store borrows the jump
+    // that follows it, which needs the table's targets: the base is the one LEA that reaches the table load.
+    [Fact]
+    public unsafe void PatchesShortAccessesInASwitchWhoseTableAddressIsLoadedBeforeTheLoop()
+    {
+        if (RuntimeInformation.ProcessArchitecture != Architecture.X64)
+            return;
+
+        var function = BuildLoopSwitchFunction(clobberBase: false);
+        using var image = PatchedImage.Create(function.Code, [(0x2100, 0x0302_0100u), (0x2200, 0u)], (SwitchTableOffset, function.Table));
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        Assert.Equal(1, image.Result.RedZoneFunctions);
+        Assert.Equal(0, image.Result.UnrelocatableSites);
+        Assert.Equal(0, image.Result.FailedSites);
+        Assert.Equal(6, image.Result.PatchedSites);
+        var call = (delegate* unmanaged<ulong, ulong, ulong>)image.Base;
+        Assert.Equal(image.Base + 0x2100, call(image.Base + 0x2100, image.Base + 0x2200));
+        Assert.Equal(15u, image.ReadUInt32(0x2200));
+    }
+
+    // A case that writes the base register gives the load a second definition, so the table stays unresolved.
+    [Fact]
+    public void KeepsRefusingALoopSwitchWhoseCaseWritesTheTableRegister()
+    {
+        if (RuntimeInformation.ProcessArchitecture != Architecture.X64)
+            return;
+
+        var function = BuildLoopSwitchFunction(clobberBase: true);
+        using var image = PatchedImage.Create(function.Code, [(0x2100, 0x0302_0100u), (0x2200, 0u)], (SwitchTableOffset, function.Table));
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.Equal(1, image.Result.PatchedSites);
+            Assert.Equal(4, image.Result.IndirectBranchRefusals);
+        }
+    }
+
+    // for (i = 0; i < 4; i++) switch (sel[i]) { case n: *acc += 1 << n; } with the table address in r9 from before the loop;
+    // returns sel. Windows argument registers; with 'clobberBase' the last case writes r9 instead of its store.
+    private static (byte[] Code, byte[] Table) BuildLoopSwitchFunction(bool clobberBase)
+    {
+        byte[] code =
+        [
+            0x48, 0x89, 0x4C, 0x24, 0xF8,                           // 0x00 mov [rsp-8], rcx
+            0x4C, 0x8D, 0x0D, 0, 0, 0, 0,                           // 0x05 lea r9, [rip + table]
+            0x45, 0x31, 0xC0,                                       // 0x0C xor r8d, r8d
+            0x42, 0x0F, 0xB6, 0x04, 0x01,                           // 0x0F loop: movzx eax, byte [rcx + r8]
+            0x48, 0x83, 0xF8, 0x03,                                 // 0x14 cmp rax, 3
+            0x77, 0x1D,                                             // 0x18 ja next
+            0x49, 0x63, 0x04, 0x81,                                 // 0x1A movsxd rax, dword [r9 + rax*4]
+            0x4C, 0x01, 0xC8,                                       // 0x1E add rax, r9
+            0xFF, 0xE0,                                             // 0x21 jmp rax
+            0x83, 0x02, 0x01, 0xEB, 0x0F,                           // 0x23 add dword [rdx], 1; jmp next
+            0x83, 0x02, 0x02, 0xEB, 0x0A,                           // 0x28 add dword [rdx], 2; jmp next
+            0x83, 0x02, 0x04, 0xEB, 0x05,                           // 0x2D add dword [rdx], 4; jmp next
+            0x83, 0x02, 0x08, 0xEB, 0x00,                           // 0x32 add dword [rdx], 8; jmp next
+            0x49, 0xFF, 0xC0,                                       // 0x37 next: inc r8
+            0x49, 0x83, 0xF8, 0x04,                                 // 0x3A cmp r8, 4
+            0x72, 0xCF,                                             // 0x3E jb loop
+            0x48, 0x8B, 0x44, 0x24, 0xF8,                           // 0x40 mov rax, [rsp-8]
+            0xC3,                                                   // 0x45 ret
+        ];
+        if (clobberBase)
+        {
+            code[0x32] = 0x4D;                                      // 0x32 mov r9, r8 replaces the last case's store
+            code[0x33] = 0x89;
+            code[0x34] = 0xC1;
+        }
+
+        BinaryPrimitives.WriteInt32LittleEndian(code.AsSpan(0x05 + 3), SwitchTableOffset - (0x05 + 7));
+        var table = new byte[4 * sizeof(int)];
+        int[] cases = [0x23, 0x28, 0x2D, 0x32];
+        for (var index = 0; index < cases.Length; index++)
+        {
+            BinaryPrimitives.WriteInt32LittleEndian(table.AsSpan(index * sizeof(int)), cases[index] - SwitchTableOffset);
+        }
+
+        return (code, table);
     }
 
     private const int SwitchTableOffset = 0x2000;
@@ -554,7 +636,7 @@ public sealed class GuestRedZonePatcherTests
             0xC3,
         ];
         using var image = PatchedImage.Create(function, [(0x40, value)]);
-        if (OperatingSystem.IsWindows() || OperatingSystem.IsMacOS())
+        if (OperatingSystem.IsWindows())
         {
             Assert.Equal(1, image.Result.PatchedSites);
             Assert.Equal(0, image.Result.FailedSites);
@@ -572,7 +654,7 @@ public sealed class GuestRedZonePatcherTests
     [InlineData(new byte[] { 0xEB, 0x00 }, 2)]
     public void GroupingStopsAtStackAndControlFlowBoundaries(byte[] separator, int expectedSites)
     {
-        if ((!OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS()) ||
+        if (!OperatingSystem.IsWindows() ||
             RuntimeInformation.ProcessArchitecture != Architecture.X64)
             return;
 
@@ -591,7 +673,7 @@ public sealed class GuestRedZonePatcherTests
     [Fact]
     public void GroupingPreservesBranchTargetsAndDisablesExpansionForIndirectJumps()
     {
-        if ((!OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS()) ||
+        if (!OperatingSystem.IsWindows() ||
             RuntimeInformation.ProcessArchitecture != Architecture.X64)
             return;
 
@@ -619,7 +701,7 @@ public sealed class GuestRedZonePatcherTests
     [Fact]
     public unsafe void GroupedRelocationPreservesRipRelativeDataFlagsAndRedZone()
     {
-        if ((!OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS()) ||
+        if (!OperatingSystem.IsWindows() ||
             RuntimeInformation.ProcessArchitecture != Architecture.X64)
             return;
 
@@ -647,7 +729,7 @@ public sealed class GuestRedZonePatcherTests
     [Fact]
     public void LargeGroupsHaveEnoughTrampolineSpace()
     {
-        if ((!OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS()) ||
+        if (!OperatingSystem.IsWindows() ||
             RuntimeInformation.ProcessArchitecture != Architecture.X64)
             return;
 
@@ -668,7 +750,7 @@ public sealed class GuestRedZonePatcherTests
     [Fact]
     public void BackwardSpanDoesNotOverwriteAnEarlierPatch()
     {
-        if ((!OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS()) ||
+        if (!OperatingSystem.IsWindows() ||
             RuntimeInformation.ProcessArchitecture != Architecture.X64) return;
 
         using var memory = new PhysicalVirtualMemory();

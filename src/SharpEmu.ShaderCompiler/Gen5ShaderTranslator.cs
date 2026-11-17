@@ -23,6 +23,9 @@ public static partial class Gen5ShaderTranslator
     private const uint MaximumDeclaredShaderSizeBytes = 1024 * 1024;
     private const uint NullScalarRegister = 125;
     private static readonly ConditionalWeakTable<object, FusedProgramRegistry> _fusedProgramsByMemory = new();
+    private static long _fusedProgramRegistrations;
+
+    public static long FusedProgramRegistrations => Interlocked.Read(ref _fusedProgramRegistrations);
 
     private sealed class FusedProgramRegistry
     {
@@ -96,6 +99,7 @@ public static partial class Gen5ShaderTranslator
             entryHeaderAddress,
             continuationAddress,
             continuationHeaderAddress));
+        Interlocked.Increment(ref _fusedProgramRegistrations);
     }
 
     public static bool UnregisterFusedProgram(CpuContext ctx, ulong entryAddress)
@@ -297,6 +301,18 @@ public static partial class Gen5ShaderTranslator
             Control = null,
         });
 
+        // Fused hull bindings can own a copy of a shared LS entry. Its header
+        // still names the original code, where PC-relative constants reside.
+        if (ctx.TryReadUInt64(parts.EntryHeaderAddress + 0x10, out var originalEntry) &&
+            originalEntry != 0 && originalEntry != entryAddress)
+        {
+            for (var index = 0; index < instructions.Count; index++)
+                instructions[index] = instructions[index] with
+                {
+                    AddressOffset = unchecked(originalEntry - entryAddress + instructions[index].ProgramOffset),
+                };
+        }
+
         foreach (var instruction in continuationProgram.Instructions)
         {
             var rebasedPc = (ulong)continuationPc + instruction.Pc;
@@ -312,7 +328,7 @@ public static partial class Gen5ShaderTranslator
                 : instruction with { Pc = (uint)rebasedPc, AddressOffset = unchecked(continuationDistance + instruction.ProgramOffset) });
         }
 
-        program = new Gen5ShaderProgram(entryAddress, instructions) { IsFusedProgram = true };
+        program = new Gen5ShaderProgram(entryAddress, instructions) { IsFusedProgram = true, FusedContinuationPc = continuationPc };
         error = string.Empty;
         return true;
     }
@@ -338,7 +354,7 @@ public static partial class Gen5ShaderTranslator
 
     // S_SWAPPC_B64 stores the address of the next instruction in its destination. With the NULL destination
     // it stores nothing, so it jumps like S_SETPC_B64 does and the code after it is not reached from here.
-    private static bool IsSwapProgramCounterWithoutReturnAddress(Gen5ShaderInstruction instruction) =>
+    internal static bool IsSwapProgramCounterWithoutReturnAddress(Gen5ShaderInstruction instruction) =>
         string.Equals(instruction.Opcode, "SSwappcB64", StringComparison.Ordinal) &&
         instruction.Destinations is [{ Kind: Gen5OperandKind.ScalarRegister, Value: NullScalarRegister }];
 
@@ -880,6 +896,7 @@ public static partial class Gen5ShaderTranslator
             0x09 => "SCbranchExecnz",
             0x0A => "SBarrier",
             0x0C => "SWaitcnt",
+            0x0E => "SSleep",
             0x0F => "SSetprio",
             0x10 => "SSendmsg",
             0x12 => "STrap",
@@ -1438,6 +1455,7 @@ public static partial class Gen5ShaderTranslator
             0x2FF => "VLshlrevB64",
             0x300 => "VLshrrevB64",
             0x373 => "VMadU32U16",
+            0x344 => "VPermB32",
             0x346 => "VLshlAddU32",
             0x345 => "VXadU32",
             0x347 => "VAddLshlU32",
@@ -1624,6 +1642,7 @@ public static partial class Gen5ShaderTranslator
             0x4F => "DsWrite2St64B64",
             0x76 => "DsReadB64",
             0x77 => "DsRead2B64",
+            0x78 => "DsRead2St64B64",
             0xA0 => "DsWriteB8D16Hi",
             0xA1 => "DsWriteB16D16Hi",
             0xA2 => "DsReadU8D16",
@@ -1646,6 +1665,22 @@ public static partial class Gen5ShaderTranslator
             name,
             $"unknown-ds op=0x{opcode:X2} word=0x{word:X8}",
             out error);
+    }
+
+    public static bool TryCreateDataShareInstruction(
+        uint pc,
+        uint word,
+        uint extra,
+        out Gen5ShaderInstruction instruction)
+    {
+        instruction = default!;
+        if (!DecodeDs(word, out var name, out _, out _))
+        {
+            return false;
+        }
+
+        instruction = CreateInstruction(pc, Gen5ShaderEncoding.Ds, name, [word, extra]);
+        return true;
     }
 
     private static bool DecodeBuffer(
@@ -1706,9 +1741,16 @@ public static partial class Gen5ShaderTranslator
         out uint sizeDwords,
         out string error)
     {
-        // GFX10 MUBUF has eight opcode bits at 18..25; bit zero belongs to OFFSET.
         var opcode = (word >> 18) & 0xFF;
-        name = opcode switch
+        name = MubufOpcodeName(opcode);
+        sizeDwords = (extra >> 24) == 0xFF ? 3u : 2u;
+        error = string.Empty;
+        return true;
+    }
+
+    public static string MubufOpcodeName(uint opcode)
+    {
+        return opcode switch
         {
             0x00 => "BufferLoadFormatX",
             0x01 => "BufferLoadFormatXy",
@@ -1769,7 +1811,10 @@ public static partial class Gen5ShaderTranslator
             0x4B => "BufferAtomicXor",
             0x4C => "BufferAtomicInc",
             0x50 => "BufferAtomicSwapX2",
+            0x59 => "BufferAtomicAndX2",
             0x5A => "BufferAtomicOrX2",
+            0x71 => "BufferGl0Inv",
+            0x72 => "BufferGl1Inv",
             0x80 => "BufferLoadFormatD16X",
             0x81 => "BufferLoadFormatD16Xy",
             0x82 => "BufferLoadFormatD16Xyz",
@@ -1780,9 +1825,6 @@ public static partial class Gen5ShaderTranslator
             0x87 => "BufferStoreFormatD16Xyzw",
             _ => $"MubufRaw{opcode:X2}",
         };
-        sizeDwords = (extra >> 24) == 0xFF ? 3u : 2u;
-        error = string.Empty;
-        return true;
     }
 
     private static bool DecodeFlat(
@@ -1885,6 +1927,8 @@ public static partial class Gen5ShaderTranslator
             0x0A => "SBufferLoadDwordx4",
             0x0B => "SBufferLoadDwordx8",
             0x0C => "SBufferLoadDwordx16",
+            0x24 => "SMemtime",
+            0x25 => "SMemrealtime",
             _ => string.Empty,
         };
 
@@ -1906,7 +1950,14 @@ public static partial class Gen5ShaderTranslator
             return true;
         }
 
-        name = opcode switch
+        name = MimgOpcodeName(opcode);
+
+        return FinishDecode(name, $"unknown-mimg op=0x{opcode:X2}", out error);
+    }
+
+    public static string MimgOpcodeName(uint opcode)
+    {
+        return opcode switch
         {
             0x00 => "ImageLoad",
             0x01 => "ImageLoadMip",
@@ -2005,8 +2056,6 @@ public static partial class Gen5ShaderTranslator
             0xE7 => "ImageBvh64IntersectRay",
             _ => string.Empty,
         };
-
-        return FinishDecode(name, $"unknown-mimg op=0x{opcode:X2}", out error);
     }
 
     private static bool DecodeVintrp(uint word, out string name, out uint sizeDwords, out string error)
@@ -2392,6 +2441,13 @@ public static partial class Gen5ShaderTranslator
                     dynamicOffsetRegister);
                 break;
             }
+            case Gen5ShaderEncoding.Smem when opcode is "SMemtime" or "SMemrealtime":
+            {
+                // A clock read writes an SGPR pair and touches no memory.
+                var clockDestination = (word >> 6) & 0x7F;
+                destinations = [Gen5Operand.Scalar(clockDestination), Gen5Operand.Scalar(clockDestination + 1)];
+                break;
+            }
             case Gen5ShaderEncoding.Smem:
             {
                 var extra = words[1];
@@ -2746,7 +2802,7 @@ public static partial class Gen5ShaderTranslator
                         Gen5Operand.Vector(vectorDestination + 1),
                         Gen5Operand.Vector(vectorDestination + 2),
                     ],
-                    "DsReadB128" or "DsRead2B64" => [
+                    "DsReadB128" or "DsRead2B64" or "DsRead2St64B64" => [
                         Gen5Operand.Vector(vectorDestination),
                         Gen5Operand.Vector(vectorDestination + 1),
                         Gen5Operand.Vector(vectorDestination + 2),
@@ -2906,7 +2962,7 @@ public static partial class Gen5ShaderTranslator
                     "BufferStoreDwordx2" => 2u,
                     "BufferStoreDwordx3" => 3u,
                     "BufferStoreDwordx4" => 4u,
-                    "BufferAtomicCmpswap" or "BufferAtomicSwapX2" or "BufferAtomicOrX2" => 2u,
+                    "BufferAtomicCmpswap" or "BufferAtomicSwapX2" or "BufferAtomicAndX2" or "BufferAtomicOrX2" => 2u,
                     _ when opcode.StartsWith("BufferAtomic", StringComparison.Ordinal) => 1u,
                     _ => 0u,
                 };

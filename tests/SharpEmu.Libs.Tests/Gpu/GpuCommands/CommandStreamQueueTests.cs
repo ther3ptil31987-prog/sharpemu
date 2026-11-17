@@ -62,6 +62,76 @@ public sealed class CommandStreamQueueTests
         Assert.Equal(IdleOutcome.Completed, queue.WaitForIdle());
     }
 
+    [Fact]
+    public void CapturedRootStillReadsIndirectCommandsFromLiveMemory()
+    {
+        var (host, queue) = NewQueue();
+        var child = CreateInstanceCountPacket(3);
+        host.WriteWords(Compute, child);
+        var root = StreamRunner.Packet(PacketOpcode.IndirectBuffer,
+            StreamRunner.Low(Compute), StreamRunner.High(Compute), (uint)child.Length);
+        var bytes = new byte[root.Length * sizeof(uint)];
+        Buffer.BlockCopy(root, 0, bytes, 0, bytes.Length);
+        host.WriteWords(Graphics, root);
+        queue.EnqueueGraphics(Graphics, (uint)root.Length, 7, new SubmittedCommandBuffer(bytes, null));
+        host.WriteWords(Graphics, new uint[root.Length]);
+        host.WriteWords(Compute, CreateInstanceCountPacket(9));
+
+        Assert.Equal(SliceResult.Completed, queue.ProcessOne());
+        Assert.Equal(9u, queue.GetInterpreter(0).InstanceCount);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CapturedRootKeepsItsEmbeddedRegisterTableUnlessGpuProduced(bool gpuProduced)
+    {
+        var (host, queue) = NewQueue();
+        var table = Graphics + 8;
+        uint[] values =
+        [
+            PacketHeader.Make(4, PacketOpcode.Nop), 0, 0x10, 7,
+            PacketHeader.Make(5, PacketOpcode.SetShaderRegisterIndirect),
+            StreamRunner.Low(table), StreamRunner.High(table), 0, 1,
+        ];
+        var bytes = new byte[values.Length * sizeof(uint)];
+        Buffer.BlockCopy(values, 0, bytes, 0, bytes.Length);
+        host.WriteWords(Graphics, values);
+        queue.EnqueueGraphics(Graphics, (uint)values.Length, 7, new SubmittedCommandBuffer(bytes, null));
+        host.WriteWords(Graphics, new uint[values.Length]);
+        host.GpuWrittenCommandData = (_, _) => gpuProduced;
+        if (gpuProduced)
+            host.PendingGpuValues[table] = (11UL << 32) | 0x10;
+
+        Assert.Equal(SliceResult.Completed, queue.ProcessOne());
+        Assert.Equal(gpuProduced ? 11u : 7u, queue.GetInterpreter(0).Registers.Shader[0x10]);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CapturedTableSurvivesCpuReuseButUsesGpuProducedData(bool gpuProduced)
+    {
+        var (host, queue) = NewQueue();
+        var table = StreamRunner.TableAddress;
+        var root = StreamRunner.Packet(PacketOpcode.SetShaderRegisterIndirect,
+            StreamRunner.Low(table), StreamRunner.High(table), 0, 1);
+        var bytes = new byte[root.Length * sizeof(uint)];
+        Buffer.BlockCopy(root, 0, bytes, 0, bytes.Length);
+        uint[] registers = [0x10, 7];
+        var tableBytes = new byte[registers.Length * sizeof(uint)];
+        Buffer.BlockCopy(registers, 0, tableBytes, 0, tableBytes.Length);
+        queue.EnqueueGraphics(Graphics, (uint)root.Length, 7,
+            new SubmittedCommandBuffer(bytes, null, new Dictionary<ulong, byte[]> { [Graphics] = tableBytes }));
+        host.WriteWords(table, [0x1B3, 2]);
+        host.GpuWrittenCommandData = (_, _) => gpuProduced;
+        if (gpuProduced)
+            host.PendingGpuValues[table] = (11UL << 32) | 0x10;
+
+        Assert.Equal(SliceResult.Completed, queue.ProcessOne());
+        Assert.Equal(gpuProduced ? 11u : 7u, queue.GetInterpreter(0).Registers.Shader[0x10]);
+    }
+
     private static uint[] ReleaseMemoryInterrupt(ulong label, uint value) =>
         StreamRunner.Packet(
             PacketOpcode.ReleaseMemory,
@@ -262,6 +332,67 @@ public sealed class CommandStreamQueueTests
         Assert.Equal(SliceResult.Completed, queue.ProcessOne());
         Assert.Equal(9u, queue.GetInterpreter(0).InstanceCount);
         Assert.Equal(1UL, queue.BlockedRetries);
+    }
+
+    [Theory]
+    [InlineData(0, true)]
+    [InlineData(1, true)]
+    [InlineData(2, true)]
+    [InlineData(0, false)]
+    [InlineData(1, false)]
+    [InlineData(2, false)]
+    public void RetryNotificationDuringWaitRead_IsRetainedAndRechecksPredicate(int notification, bool labelReady)
+    {
+        var (host, queue) = NewQueue();
+        host.WriteDword(Label, 0);
+        Enqueue(host, queue, Graphics, 1, WaitEqual(Label, 1), CreateInstanceCountPacket(9));
+        host.AfterWaitOperandRead = address =>
+        {
+            Assert.Equal(Label, address);
+            host.AfterWaitOperandRead = null;
+            if (labelReady) host.WriteDword(Label, 1);
+            switch (notification)
+            {
+                case 0: queue.NotifyCompletedGpuTick(1); break;
+                case 1: queue.RetryBlocked(); break;
+                case 2: queue.NotifyPublicationCompleted(); break;
+                default: throw new ArgumentOutOfRangeException(nameof(notification));
+            }
+        };
+
+        // The current read still contains zero. Only the next attempt can observe the update.
+        Assert.Equal(SliceResult.BlockedWithoutProgress, queue.ProcessOne());
+        Assert.Equal(0, queue.BlockedQueueCount);
+        Assert.True(queue.HasUnblockedPending);
+        Assert.Equal(labelReady ? SliceResult.Completed : SliceResult.BlockedWithoutProgress, queue.ProcessOne());
+        Assert.Equal(2, host.OperandReads.Count(address => address == Label));
+        if (labelReady)
+        {
+            Assert.Equal(9u, queue.GetInterpreter(0).InstanceCount);
+            Assert.Equal(SliceResult.NoWork, queue.ProcessOne());
+        }
+        else
+        {
+            // A wake is not permission to skip WAIT_REG_MEM or busy-retry indefinitely.
+            Assert.Equal(1, queue.BlockedQueueCount);
+            Assert.Equal(SliceResult.AllBlocked, queue.ProcessOne());
+            Assert.NotEqual(9u, queue.GetInterpreter(0).InstanceCount);
+        }
+    }
+
+    [Fact]
+    public void RepeatedGpuTickDuringWaitRead_DoesNotCreateAnotherRetry()
+    {
+        var (host, queue) = NewQueue();
+        queue.NotifyCompletedGpuTick(1);
+        host.WriteDword(Label, 0);
+        Enqueue(host, queue, Graphics, 1, WaitEqual(Label, 1));
+        host.AfterWaitOperandRead = _ => queue.NotifyCompletedGpuTick(1);
+
+        Assert.Equal(SliceResult.BlockedWithoutProgress, queue.ProcessOne());
+        Assert.Equal(1, queue.BlockedQueueCount);
+        Assert.False(queue.HasUnblockedPending);
+        Assert.Equal(SliceResult.AllBlocked, queue.ProcessOne());
     }
 
     [Fact]

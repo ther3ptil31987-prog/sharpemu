@@ -73,6 +73,8 @@ public sealed class GuestSpaceOwner : IDisposable
 
     public bool TryWriteSingleView(ulong address, ReadOnlySpan<byte> data) => _views.TryWriteSingleView(address, data);
 
+    public bool TryCopySingleView(ulong destination, ulong source, ulong size) => _views.TryCopySingleView(destination, source, size);
+
     public object AliasSnapshot => _views.AliasSnapshot;
 
     public bool TryEnterAliasAccess() => _views.TryEnterAliasAccess();

@@ -79,6 +79,33 @@ public static class PadExports
     {
         return ctx.SetReturn(0);
     }
+
+    // Uncatalogued name; the NID and import library identify this export. Observed ABI: a pad handle and an int32
+    // output; callers read the output only after a zero result and take zero as the default state.
+    [SysAbiExport(
+        Nid = "zBsgF0q8DIM",
+        ExportName = "scePadUnknownZBsgF0q8DIM",
+        Target = Generation.Gen5,
+        LibraryName = "libScePad")]
+    public static int PadUnknownZBsgF0q8DIM(CpuContext ctx)
+    {
+        var handle = unchecked((int)ctx[CpuRegister.Rdi]);
+        var valueAddress = ctx[CpuRegister.Rsi];
+        if (!TryGetSession(ctx, handle, out _))
+        {
+            return ctx.SetReturn(OrbisPadErrorInvalidHandle);
+        }
+
+        if (valueAddress == 0)
+        {
+            return ctx.SetReturn(OrbisPadErrorInvalidArgument);
+        }
+
+        ReadOnlySpan<byte> value = [0, 0, 0, 0];
+        return ctx.Memory.TryWrite(valueAddress, value)
+            ? ctx.SetReturn(0)
+            : ctx.SetReturn((int)OrbisGen2Result.ORBIS_GEN2_ERROR_MEMORY_FAULT);
+    }
     #pragma warning restore SHEM006
 
     [SysAbiExport(
@@ -181,7 +208,7 @@ public static class PadExports
         {
             Console.Error.WriteLine(input.DescribeConnectedGamepad() is { } gamepadName
                 ? $"[LOADER][INFO] Controls: {gamepadName} connected (keyboard fallback also active)."
-                : "[LOADER][INFO] Keyboard controls: Arrow keys = D-pad, WASD = left stick, IJKL = right stick, Z/Enter = Cross, X/Esc = Circle, C = Square, V = Triangle, Q = L1, E = R1, R = L2, F = R2, Tab/Backspace = Options. A DualSense or Xbox controller will be used automatically when plugged in.");
+                : "[LOADER][INFO] Keyboard controls: Arrow keys = D-pad, WASD = left stick, IJKL = right stick, Z/Enter = Cross, X/Esc = Circle, C = Square, V = Triangle, Q = L1, E = R1, R = L2, F = R2, Tab/Backspace = Options, T/Y = left/right touchpad press. A DualSense or Xbox controller will be used automatically when plugged in.");
         }
 
         return ReturnPadHandleResult(ctx, exportName, userId, type, index, result);
@@ -945,6 +972,11 @@ public static class PadExports
             }
         }
 
+        if (!touch.First.Active && ReadKeyboardTouch(input, acceptsKeyboardInput) is { } keyboardTouch)
+        {
+            touch = new HostTouchState(keyboardTouch, default);
+        }
+
         if (IsAutoCrossActive())
         {
             buttons |= 0x4000;
@@ -1100,7 +1132,17 @@ public static class PadExports
         if (input.IsKeyDown(0x46)) buttons |= OrbisPadButton.R2;                                // F (digital)
         // Options (Start)
         if (input.IsKeyDown(0x09) || input.IsKeyDown(0x08)) buttons |= OrbisPadButton.Options;  // Tab / Backspace
+        // Touchpad press on the left or right half
+        if (input.IsKeyDown(0x54) || input.IsKeyDown(0x59)) buttons |= OrbisPadButton.TouchPad; // T / Y
         return buttons;
+    }
+
+    private static HostTouchPoint? ReadKeyboardTouch(IHostInput input, bool acceptsKeyboardInput)
+    {
+        if (!acceptsKeyboardInput) return null;
+        if (input.IsKeyDown(0x54)) return new HostTouchPoint(true, 0, 0.25f, 0.5f);
+        if (input.IsKeyDown(0x59)) return new HostTouchPoint(true, 0, 0.75f, 0.5f);
+        return null;
     }
 
     private static byte ReadAnalogStick(bool negative, bool positive)

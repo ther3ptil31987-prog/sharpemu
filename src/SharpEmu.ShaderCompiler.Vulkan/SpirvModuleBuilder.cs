@@ -35,6 +35,7 @@ public enum SpirvOp : ushort
     Constant = 43,
     ConstantComposite = 44,
     ConstantNull = 46,
+    SpecConstant = 50,
     Function = 54,
     FunctionParameter = 55,
     FunctionEnd = 56,
@@ -44,6 +45,7 @@ public enum SpirvOp : ushort
     Load = 61,
     Store = 62,
     AccessChain = 65,
+    PtrAccessChain = 67,
     ArrayLength = 68,
     Decorate = 71,
     VectorExtractDynamic = 77,
@@ -176,18 +178,29 @@ public enum SpirvOp : ushort
     GroupNonUniformBroadcast = 337,
     GroupNonUniformBroadcastFirst = 338,
     GroupNonUniformBallot = 339,
+    GroupNonUniformBallotBitExtract = 341,
     GroupNonUniformBallotBitCount = 342,
     GroupNonUniformShuffle = 345,
     GroupNonUniformShuffleXor = 346,
     GroupNonUniformShuffleUp = 347,
     GroupNonUniformShuffleDown = 348,
+    GroupNonUniformIAdd = 349,
+    GroupNonUniformSMin = 353,
     GroupNonUniformUMin = 354,
+    GroupNonUniformSMax = 356,
+    GroupNonUniformUMax = 357,
+    GroupNonUniformBitwiseAnd = 359,
+    GroupNonUniformBitwiseOr = 360,
+    GroupNonUniformBitwiseXor = 361,
+    EmitMeshTasksExt = 5294,
     SetMeshOutputsExt = 5295,
+    ReadClockKhr = 5056,
 }
 
 public enum SpirvCapability : uint
 {
     Shader = 1,
+    Tessellation = 3,
     ShaderLayer = 69,
     InterpolationFunction = 52,
     FragmentBarycentricKhr = 5284,
@@ -215,13 +228,17 @@ public enum SpirvCapability : uint
     GroupNonUniformBallot = 64,
     GroupNonUniformShuffle = 65,
     ShaderViewportIndex = 70,
+    DrawParameters = 4427,
     ShaderViewportIndexLayerExt = 5254,
     ShaderNonUniform = 5301,
     RuntimeDescriptorArray = 5302,
     SampledImageArrayNonUniformIndexing = 5307,
     PhysicalStorageBufferAddresses = 5347,
+    DenormPreserve = 4464,
     SignedZeroInfNanPreserve = 4466,
+    RoundingModeRte = 4467,
     MeshShadingExt = 5283,
+    ShaderClockKhr = 5055,
 }
 
 public enum SpirvStorageClass : uint
@@ -237,22 +254,37 @@ public enum SpirvStorageClass : uint
     Image = 11,
     StorageBuffer = 12,
     PhysicalStorageBuffer = 5349,
+    TaskPayloadWorkgroupExt = 5402,
 }
 
 public enum SpirvExecutionModel : uint
 {
     Vertex = 0,
+    TessellationControl = 1,
+    TessellationEvaluation = 2,
     Fragment = 4,
     GLCompute = 5,
+    TaskExt = 5364,
     MeshExt = 5365,
 }
 
 public enum SpirvExecutionMode : uint
 {
+    SpacingEqual = 1,
+    SpacingFractionalEven = 2,
+    SpacingFractionalOdd = 3,
+    VertexOrderCw = 4,
+    VertexOrderCcw = 5,
+    PointMode = 10,
+    Triangles = 22,
+    Quads = 24,
+    Isolines = 25,
     OriginUpperLeft = 7,
     DepthReplacing = 12,
     LocalSize = 17,
+    DenormPreserve = 4459,
     SignedZeroInfNanPreserve = 4461,
+    RoundingModeRte = 4462,
     OutputVertices = 26,
     OutputPrimitivesExt = 5270,
     OutputTrianglesExt = 5298,
@@ -260,12 +292,14 @@ public enum SpirvExecutionMode : uint
 
 public enum SpirvDecoration : uint
 {
+    SpecId = 1,
     Block = 2,
     ArrayStride = 6,
     BuiltIn = 11,
     NoPerspective = 13,
     Flat = 14,
     PerVertexKhr = 5285,
+    Patch = 15,
     Location = 30,
     Index = 32,
     Binding = 33,
@@ -285,10 +319,17 @@ public enum SpirvBuiltIn : uint
     PointSize = 1,
     ClipDistance = 3,
     CullDistance = 4,
+    PrimitiveId = 7,
     Layer = 9,
     ViewportIndex = 10,
+    InvocationId = 8,
+    TessLevelOuter = 11,
+    TessLevelInner = 12,
+    TessCoord = 13,
+    PatchVertices = 14,
     VertexIndex = 42,
     InstanceIndex = 43,
+    BaseInstance = 4425,
     FragCoord = 15,
     BaryCoordKhr = 5286,
     BaryCoordNoPerspKhr = 5287,
@@ -362,7 +403,7 @@ public enum SpirvImageFormat : uint
     R64ui = 40,
 }
 
-public sealed class SpirvModuleBuilder
+public sealed partial class SpirvModuleBuilder
 {
     private const uint Magic = 0x07230203;
     private const uint Version15 = 0x00010500;
@@ -479,11 +520,30 @@ public sealed class SpirvModuleBuilder
         Emit(_executionModes, SpirvOp.ExecutionMode, values);
     }
 
-    public void AddName(uint target, string name) =>
-        EmitWithString(_debug, SpirvOp.Name, [target], name);
+    public void AddName(uint target, string name)
+    {
+        if (_namedTargets.Add(target))
+        {
+            EmitWithString(_debug, SpirvOp.Name, [target], name);
+        }
+    }
 
     public void AddDecoration(uint target, SpirvDecoration decoration, params uint[] operands)
     {
+        if (operands.Length == 0 && !_plainDecorations.Add((target, decoration)))
+        {
+            return;
+        }
+
+        if (decoration == SpirvDecoration.BuiltIn && operands is [(uint)SpirvBuiltIn.HelperInvocation])
+        {
+            _changingInputs.Add(target);
+        }
+        else if (decoration == SpirvDecoration.BuiltIn && operands is [(uint)SpirvBuiltIn.SubgroupLocalInvocationId])
+        {
+            _laneIdInputs.Add(target);
+        }
+
         var values = new uint[2 + operands.Length];
         values[0] = target;
         values[1] = (uint)decoration;
@@ -542,6 +602,7 @@ public sealed class SpirvModuleBuilder
         var id = AllocateId();
         Emit(_typesConstantsGlobals, SpirvOp.TypeInt, id, width, signed ? 1u : 0u);
         _integerTypes.Add(key, id);
+        _integerTypeInfo[id] = (width, signed);
         return id;
     }
 
@@ -680,6 +741,11 @@ public sealed class SpirvModuleBuilder
         var id = AllocateId();
         Emit(_typesConstantsGlobals, SpirvOp.TypePointer, id, (uint)storageClass, type);
         _pointerTypes.Add(key, id);
+        if (IntegerWidth(type) != 0 || _floatTypes.ContainsValue(type) || _boolType == type)
+        {
+            _scalarPointerTypes.Add(id);
+        }
+
         return id;
     }
 
@@ -718,6 +784,7 @@ public sealed class SpirvModuleBuilder
             id);
         _constants.Add(key, id);
         _scalarConstantValues[id] = value ? 1u : 0u;
+        NoteResultType(id, type);
         return id;
     }
 
@@ -732,9 +799,14 @@ public sealed class SpirvModuleBuilder
         var id = AllocateId();
         Emit(_typesConstantsGlobals, SpirvOp.Constant, type, id, value);
         _constants.Add(key, id);
+        NoteResultType(id, type);
         if (IsInt32Type(type))
         {
             _scalarConstantValues[id] = value;
+        }
+        else if (IsFloat32Type(type))
+        {
+            _floatConstantBits[id] = value;
         }
 
         return id;
@@ -757,6 +829,12 @@ public sealed class SpirvModuleBuilder
             (uint)value,
             (uint)(value >> 32));
         _constants.Add(key, id);
+        NoteResultType(id, type);
+        if (IntegerWidth(type) == 64)
+        {
+            _wideConstantValues[id] = value;
+        }
+
         return id;
     }
 
@@ -771,6 +849,7 @@ public sealed class SpirvModuleBuilder
         operands[1] = id;
         constituents.CopyTo(operands, 2);
         Emit(_typesConstantsGlobals, SpirvOp.ConstantComposite, operands);
+        NoteResultType(id, type);
         return id;
     }
 
@@ -785,6 +864,17 @@ public sealed class SpirvModuleBuilder
         var id = AllocateId();
         Emit(_typesConstantsGlobals, SpirvOp.ConstantNull, type, id);
         _constants.Add(key, id);
+        NoteResultType(id, type);
+        return id;
+    }
+
+    // A 32-bit specialization constant. It is never folded or shared with a constant, because
+    // the pipeline sets its value.
+    public uint SpecConstant(uint type, uint specId, uint defaultValue)
+    {
+        var id = AllocateId();
+        Emit(_typesConstantsGlobals, SpirvOp.SpecConstant, type, id, defaultValue);
+        AddDecoration(id, SpirvDecoration.SpecId, specId);
         return id;
     }
 
@@ -809,6 +899,19 @@ public sealed class SpirvModuleBuilder
             Emit(_typesConstantsGlobals, SpirvOp.Variable, pointerType, id, (uint)storageClass);
         }
 
+        if (storageClass == SpirvStorageClass.Private)
+        {
+            _localVariables.Add(id);
+        }
+        else if (storageClass == SpirvStorageClass.Input)
+        {
+            _inputVariables.Add(id);
+        }
+        else if (storageClass is SpirvStorageClass.UniformConstant or SpirvStorageClass.PushConstant)
+        {
+            _immutableVariables.Add(id);
+        }
+
         return id;
     }
 
@@ -822,16 +925,32 @@ public sealed class SpirvModuleBuilder
     public uint BeginFunction(uint returnType, uint functionType, uint functionControl, uint id)
     {
         Emit(_functions, SpirvOp.Function, returnType, id, functionControl, functionType);
+        ResetBlockState();
+        CurrentFunction = id;
+        _entryLabelPending = true;
         return id;
     }
 
     public uint AddFunctionParameter(uint type) =>
         EmitResult(_functions, SpirvOp.FunctionParameter, type);
 
+    // The label of the block being emitted.
+    public uint CurrentBlock => _currentBlock;
+
     public uint AddLabel(uint? id = null)
     {
         var result = id ?? AllocateId();
+        if (_entryLabelPending)
+        {
+            _entryLabelPending = false;
+            _entryLabelOffset = _functions.Count;
+            _entryValues.Clear();
+            _entryOperations.Clear();
+            _entryIds.Clear();
+        }
+
         Emit(_functions, SpirvOp.Label, result);
+        EnterBlock(result);
         return result;
     }
 
@@ -858,13 +977,9 @@ public sealed class SpirvModuleBuilder
                 (uint)SpirvStorageClass.Function);
         }
 
+        _localVariables.Add(id);
         return id;
     }
-
-    public uint AddInstruction(SpirvOp opcode, uint resultType, params uint[] operands) =>
-        TryFold(opcode, resultType, operands, out var folded)
-            ? folded
-            : EmitResult(_functions, opcode, resultType, operands);
 
     private bool IsInt32Type(uint type) =>
         (_integerTypes.TryGetValue((32, false), out var unsignedType) && unsignedType == type) ||
@@ -1003,10 +1118,12 @@ public sealed class SpirvModuleBuilder
         return true;
     }
 
-    public void AddStatement(SpirvOp opcode, params uint[] operands) =>
-        Emit(_functions, opcode, operands);
-
-    public void EndFunction() => Emit(_functions, SpirvOp.FunctionEnd);
+    public void EndFunction()
+    {
+        Emit(_functions, SpirvOp.FunctionEnd);
+        ResetBlockState();
+        CurrentFunction = 0;
+    }
 
     public byte[] Build()
     {
@@ -1015,18 +1132,25 @@ public sealed class SpirvModuleBuilder
             SetLogicalGlsl450MemoryModel();
         }
 
+        var unreadVariables = FindUnreadVariables(out var unreadPointers);
+        var removedIds = new HashSet<uint>(unreadVariables);
+        var functions = CompactFunctions(removedIds, unreadPointers);
+        var debug = WithoutTargets(_debug, removedIds);
+        var annotations = WithoutTargets(_annotations, removedIds);
+        var entryPoints = WithoutInterfaces(_entryPoints, unreadVariables);
+        var globals = WithoutVariables(_typesConstantsGlobals, unreadVariables);
         var wordCount =
             5 +
             _capabilities.Count +
             _extensions.Count +
             _imports.Count +
             _memoryModel.Count +
-            _entryPoints.Count +
+            entryPoints.Count +
             _executionModes.Count +
-            _debug.Count +
-            _annotations.Count +
-            _typesConstantsGlobals.Count +
-            _functions.Count;
+            debug.Count +
+            annotations.Count +
+            globals.Count +
+            functions.Count;
         var words = new uint[wordCount];
         var offset = 0;
         WriteWord(Magic);
@@ -1038,12 +1162,12 @@ public sealed class SpirvModuleBuilder
         WriteSection(_extensions);
         WriteSection(_imports);
         WriteSection(_memoryModel);
-        WriteSection(_entryPoints);
+        WriteSection(entryPoints);
         WriteSection(_executionModes);
-        WriteSection(_debug);
-        WriteSection(_annotations);
-        WriteSection(_typesConstantsGlobals);
-        WriteSection(_functions);
+        WriteSection(debug);
+        WriteSection(annotations);
+        WriteSection(globals);
+        WriteSection(functions);
         var bytes = new byte[wordCount * sizeof(uint)];
         Buffer.BlockCopy(words, 0, bytes, 0, bytes.Length);
         return bytes;
@@ -1069,11 +1193,11 @@ public sealed class SpirvModuleBuilder
         params uint[] operands)
     {
         var result = AllocateId();
-        var values = new uint[operands.Length + 2];
-        values[0] = resultType;
-        values[1] = result;
-        operands.CopyTo(values, 2);
-        Emit(section, opcode, values);
+        section.Add(((uint)(operands.Length + 3) << 16) | (ushort)opcode);
+        section.Add(resultType);
+        section.Add(result);
+        section.AddRange(operands);
+        NoteResultType(result, resultType);
         return result;
     }
 

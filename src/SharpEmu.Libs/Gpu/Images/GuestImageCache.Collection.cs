@@ -20,6 +20,7 @@ public sealed partial class GuestImageCache
         var tick = endsFrame ? _collectionTick++ : _collectionTick;
         if (endsFrame && SharpEmu.Libs.VideoOut.RenderPhaseProfile.Enabled && tick % 300 == 0)
             ReportImageMemory("collection", true, tick);
+        ExpireParkedImages(tick);
         if (_totalUsedMemory < _collectionStartBytes)
         {
             return;
@@ -129,14 +130,40 @@ public sealed partial class GuestImageCache
         foreach (var imageIdentifier in _scheduledReadbacks)
         {
             var owner = _slots.TryGet(imageIdentifier);
-            if (owner != null && owner.Registered && owner.IsGpuModified)
+            if (owner != null && owner.Registered && owner.IsGpuModified && !HostLayoutTargets.Holds(owner.Description.Data.Address) &&
+                TryDownloadToGuest(imageIdentifier))
             {
-                _ = TryDownloadToGuest(imageIdentifier);
+                ReportLinearReadback(owner);
             }
         }
 
         _scheduledReadbacks.Clear();
     }
+
+    private const int MaxReportedLinearReadbacks = 16;
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<ulong, byte> ReportedLinearReadbacks = new();
+
+    private static void ReportLinearReadback(CachedImage image)
+    {
+        var description = image.Description;
+        if (ReportedLinearReadbacks.Count >= MaxReportedLinearReadbacks || !ReportedLinearReadbacks.TryAdd(description.Data.Address, 0))
+        {
+            return;
+        }
+
+        Console.Error.WriteLine(
+            $"[GPU][INFO] linear image readback address=0x{description.Data.Address:X16} bytes=0x{description.Data.Size:X} " +
+            $"extent={description.Extent.Width}x{description.Extent.Height}x{description.Extent.Depth} layers={description.Resources.Layers} " +
+            $"levels={description.Resources.Levels} format={description.PixelFormat} guest_format={description.GuestFormat} render_target={image.Uses.RenderTarget}");
+    }
+
+    private long _pendingDestroyBytes;
+
+    private long _destroyedImageReclaims;
+
+    public void NoteDestroyedImageReclaim() => Interlocked.Increment(ref _destroyedImageReclaims);
+
+    public bool HoldsManyDestroyedImages => (ulong)Math.Max(0, Volatile.Read(ref _pendingDestroyBytes)) >= _memoryPressureBytes;
 
     // Test seams: thresholds, the recency order and the private state the tests inspect.
     internal void SetCollectionThresholds(ulong trigger, ulong pressure, ulong critical, ulong tick)
@@ -225,15 +252,17 @@ public sealed partial class GuestImageCache
     internal void AddPageOwner(ulong address, ResourceSlotIdentifier imageIdentifier)
     {
         using var held = _lock.Hold();
-        InvalidateLookups();
-        _pageOwners.GetOrCreate(address >> ImagePageOwnerTable.PageBits).Add(imageIdentifier);
+        var page = address >> ImagePageOwnerTable.PageBits;
+        InvalidateLookups(page << ImagePageOwnerTable.PageBits, (page + 1) << ImagePageOwnerTable.PageBits);
+        _pageOwners.GetOrCreate(page).Add(imageIdentifier);
     }
 
     internal bool RemovePageOwner(ulong address, ResourceSlotIdentifier imageIdentifier)
     {
         using var held = _lock.Hold();
-        InvalidateLookups();
-        return _pageOwners.Find(address >> ImagePageOwnerTable.PageBits)?.Remove(imageIdentifier) == true;
+        var page = address >> ImagePageOwnerTable.PageBits;
+        InvalidateLookups(page << ImagePageOwnerTable.PageBits, (page + 1) << ImagePageOwnerTable.PageBits);
+        return _pageOwners.Find(page)?.Remove(imageIdentifier) == true;
     }
 
     internal uint QueryEpoch
@@ -303,14 +332,14 @@ public sealed partial class GuestImageCache
 
     internal readonly struct RegionLockScope : IDisposable
     {
-        private readonly HLE.GpuMemory.RegionLock _lock;
+        private readonly HLE.GpuMemory.SpinReadWriteLock _lock;
 
-        public RegionLockScope(HLE.GpuMemory.RegionLock regionLock)
+        public RegionLockScope(HLE.GpuMemory.SpinReadWriteLock cacheLock)
         {
-            _lock = regionLock;
-            regionLock.Enter();
+            _lock = cacheLock;
+            cacheLock.EnterWrite();
         }
 
-        public void Dispose() => _lock.Exit();
+        public void Dispose() => _lock.ExitWrite();
     }
 }

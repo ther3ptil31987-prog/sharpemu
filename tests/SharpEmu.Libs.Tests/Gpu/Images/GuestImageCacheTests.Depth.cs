@@ -227,6 +227,32 @@ public sealed unsafe partial class GuestImageCacheTests
         harness.Shutdown();
     }
 
+    // Only an image that starts at the buffer's address is synchronized into it: one that starts two 1 MiB owner pages into a
+    // larger buffer is not taken for that buffer, and is for a buffer at its own address.
+    [Fact]
+    public void BufferSynchronization_TakesOnlyTheImageAtTheBuffersAddress()
+    {
+        if (!GatePrerequisites.Ready(_vulkan)) return;
+        using var harness = new CacheHarness(_vulkan);
+        const ulong page = 0x100000;
+        var address = harness.MapBacked(3 * page, ReadWrite);
+        var later = address + 2 * page;
+        harness.Write(later, Bytes(0x11223344u));
+        var request = LinearRequest(later, 4, Format.R32Uint, GuestPixelFormat.Bits32UInt, GuestImageType.Color2D, new Extent3D(1, 1, 1), 1, 4, 1);
+        var imageIdentifier = harness.Acquire(ref request);
+        harness.MarkGpuWritten(imageIdentifier);
+        harness.Worker.Run(() =>
+        {
+            using var whole = new GpuBuffer(harness.Vulkan.DeviceInfo, harness.Scheduler, GpuBufferUsage.DeviceLocal, address, GpuBuffer.AllFlags, 3 * page);
+            using var own = new GpuBuffer(harness.Vulkan.DeviceInfo, harness.Scheduler, GpuBufferUsage.DeviceLocal, later, GpuBuffer.AllFlags, page);
+            Assert.False(harness.Images.TrySynchronizeBufferFromImage(whole, address, 3 * page));
+            Assert.True(harness.Images.TrySynchronizeBufferFromImage(own, later, page));
+            Assert.Equal(0x11223344u, BitConverter.ToUInt32(harness.CopyFromDevice(own.Handle, 0, 4)));
+            harness.Scheduler.Finish();
+        });
+        harness.Shutdown();
+    }
+
     // A tiled array's mip layout ends before its tile plan does: each level spans its size times the layer count from
     // its offset in the first slice, while every 64 KiB slice holds a whole chain with the base level last. A buffer
     // over the whole image takes every tile; a buffer that ends inside the last tile keeps the guest bytes.
@@ -261,10 +287,10 @@ public sealed unsafe partial class GuestImageCacheTests
         harness.Worker.Run(() =>
         {
             var command = new CommandBuffer(harness.Scheduler.Current.Handle);
-            image.Transition(ImageLayout.TransferDstOptimal, AccessFlags.TransferWriteBit, null, command);
+            image.Transition(AccessFlags.TransferWriteBit, null, command);
             var clear = new ClearColorValue { Uint32_0 = texel[0], Uint32_1 = texel[1], Uint32_2 = texel[2], Uint32_3 = texel[3] };
             var range = new ImageSubresourceRange(ImageAspectFlags.ColorBit, 0, levels, 0, layers);
-            harness.Vulkan.Vk.CmdClearColorImage(command, image.Backing.Handle, ImageLayout.TransferDstOptimal, &clear, 1, &range);
+            harness.Vulkan.Vk.CmdClearColorImage(command, image.Backing.Handle, ImageLayout.General, &clear, 1, &range);
         });
         harness.MarkGpuWritten(identifier);
         harness.Worker.Run(() =>
@@ -311,11 +337,11 @@ public sealed unsafe partial class GuestImageCacheTests
         harness.Worker.Run(() =>
         {
             var command = new CommandBuffer(harness.Scheduler.Current.Handle);
-            image.Transition(ImageLayout.TransferDstOptimal, AccessFlags.TransferWriteBit, null, command);
+            image.Transition(AccessFlags.TransferWriteBit, null, command);
             var clear = new ClearColorValue { Uint32_0 = 0, Uint32_1 = 0, Uint32_2 = 0, Uint32_3 = 0 };
             clear.Float32_0 = 1f;
             var range = new ImageSubresourceRange(ImageAspectFlags.ColorBit, 0, levels, 0, layers);
-            harness.Vulkan.Vk.CmdClearColorImage(command, image.Backing.Handle, ImageLayout.TransferDstOptimal, &clear, 1, &range);
+            harness.Vulkan.Vk.CmdClearColorImage(command, image.Backing.Handle, ImageLayout.General, &clear, 1, &range);
         });
         harness.MarkGpuWritten(identifier);
         harness.Worker.Run(() =>
@@ -370,10 +396,10 @@ public sealed unsafe partial class GuestImageCacheTests
         {
             var image = harness.Image(layeredColorId);
             var command = new CommandBuffer(harness.Scheduler.Current.Handle);
-            image.Transition(ImageLayout.TransferDstOptimal, AccessFlags.TransferWriteBit, null, command);
+            image.Transition(AccessFlags.TransferWriteBit, null, command);
             var clear = new ClearColorValue { Float32_0 = 1.0f };
             var range = new ImageSubresourceRange(ImageAspectFlags.ColorBit, 0, 1, 0, 6);
-            harness.Vulkan.Vk.CmdClearColorImage(command, image.Backing.Handle, ImageLayout.TransferDstOptimal, &clear, 1, &range);
+            harness.Vulkan.Vk.CmdClearColorImage(command, image.Backing.Handle, ImageLayout.General, &clear, 1, &range);
         });
         harness.MarkGpuWritten(layeredColorId);
 
@@ -423,12 +449,12 @@ public sealed unsafe partial class GuestImageCacheTests
         {
             var image = harness.Image(colorIdentifier);
             var command = new CommandBuffer(harness.Scheduler.Current.Handle);
-            image.Transition(ImageLayout.TransferDstOptimal, AccessFlags.TransferWriteBit, null, command);
+            image.Transition(AccessFlags.TransferWriteBit, null, command);
             for (uint layer = 0; layer < layers; layer++)
             {
                 var clear = new ClearColorValue { Float32_0 = (layer + 1) / 8f };
                 var range = new ImageSubresourceRange(ImageAspectFlags.ColorBit, 0, 1, layer, 1);
-                harness.Vulkan.Vk.CmdClearColorImage(command, image.Backing.Handle, ImageLayout.TransferDstOptimal, &clear, 1, &range);
+                harness.Vulkan.Vk.CmdClearColorImage(command, image.Backing.Handle, ImageLayout.General, &clear, 1, &range);
             }
         });
         harness.MarkGpuWritten(colorIdentifier);
@@ -563,7 +589,7 @@ public sealed unsafe partial class GuestImageCacheTests
         Assert.NotEqual(0UL, depthView.Handle);
         var depthImage = harness.Image(depthId);
         Assert.Equal(2u, depthImage.Backing.Samples);
-        Assert.Equal(ImageLayout.DepthStencilAttachmentOptimal, depthImage.Backing.State.Layout);
+        Assert.Equal(ImageLayout.General, depthImage.Backing.State.Layout);
         Assert.True(depthImage.IsGpuModified);
         Assert.Equal(0u, depthImage.Description.HtileClearMask);
         Assert.Equal(depth.Description.Metadata.Range, depthImage.Description.Metadata.Range);

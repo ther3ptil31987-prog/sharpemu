@@ -1,6 +1,7 @@
 // Copyright (C) 2026 SharpEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+using SharpEmu.Libs.Gpu.Buffers;
 using SharpEmu.Libs.Gpu.Vulkan;
 using SharpEmu.Libs.Tests.Gpu.Images;
 using SharpEmu.Libs.Tests.Gpu.Scheduling;
@@ -15,8 +16,11 @@ public sealed class GuestBufferAsyncReadbackTests(HeadlessVulkanFixture fixture)
 {
     private readonly HeadlessVulkan? _vulkan = fixture.Vulkan;
 
-    private static void Attach(CacheHarness harness, HeadlessVulkan vulkan) =>
+    private static void Attach(CacheHarness harness, HeadlessVulkan vulkan, bool eagerReadbacks = true)
+    {
         harness.Cache.AsyncReadback = new VulkanAsyncReadback(vulkan.DeviceInfo, harness.Scheduler, vulkan.Queue, vulkan.QueueFamily);
+        harness.Cache.EagerReadbacksEnabled = eagerReadbacks;
+    }
 
     private static void Detach(CacheHarness harness) => harness.Worker.Run(() =>
     {
@@ -80,6 +84,33 @@ public sealed class GuestBufferAsyncReadbackTests(HeadlessVulkanFixture fixture)
         harness.Shutdown();
     }
 
+    [Fact]
+    public void AGuestReadCountsItsWaitAndTheFrameAgeOfItsWriter()
+    {
+        if (_vulkan is null || !GatePrerequisites.Ready(_vulkan)) return;
+        using var harness = new CacheHarness(_vulkan);
+        using var fatal = new FatalScope();
+        Attach(harness, _vulkan);
+        var address = harness.MapBacked(0x10000, ReadWrite);
+        GpuWrite(harness, address, 0x55667788);
+        var lastTick = harness.Scheduler.CurrentTick;
+        for (var frame = 0; frame < 3; frame++)
+        {
+            harness.Cache.FrameTicks.NoteFrameSubmitted(lastTick);
+        }
+
+        var reads = GuestBufferCache.GuestReadbacks.Total;
+        var oldWriters = GuestBufferCache.GuestReadbackFrameAge[3].Total;
+
+        Assert.True(harness.Cache.DownloadToCpu(address + 8, 4));
+
+        Assert.True(GuestBufferCache.GuestReadbacks.Total > reads);
+        Assert.True(GuestBufferCache.GuestReadbackFrameAge[3].Total > oldWriters);
+        Assert.Equal(0x55667788u, BitConverter.ToUInt32(harness.Read(address + 8, 4)));
+        Detach(harness);
+        harness.Shutdown();
+    }
+
     private static void GpuWrite(CacheHarness harness, ulong address, uint value) => harness.Worker.Run(() =>
     {
         var (buffer, offset) = harness.Cache.ObtainBuffer(address, 0x100, isWritten: true);
@@ -112,6 +143,31 @@ public sealed class GuestBufferAsyncReadbackTests(HeadlessVulkanFixture fixture)
         QueueRead(harness, address);
 
         Assert.Equal(1, harness.Cache.EagerReadbacksUsed);
+        Assert.False(harness.Cache.HasGpuDirtyBytes(address, 0x100));
+        Assert.Equal(0x02020202u, BitConverter.ToUInt32(harness.Read(address + 0x40, 4)));
+        Detach(harness);
+        harness.Shutdown();
+    }
+
+    // Eager readbacks are off by default: a GPU write into a hot window starts none, and the next read still lands the
+    // newest bytes through its own download.
+    [Fact]
+    public void AHotWindowIsNotReadAheadUnlessEagerReadbacksAreEnabled()
+    {
+        if (_vulkan is null || !GatePrerequisites.Ready(_vulkan)) return;
+        using var harness = new CacheHarness(_vulkan);
+        using var fatal = new FatalScope();
+        Assert.False(harness.Cache.EagerReadbacksEnabled);
+        Attach(harness, _vulkan, eagerReadbacks: false);
+        var address = harness.MapBacked(0x10000, ReadWrite);
+        GpuWrite(harness, address, 0x01010101);
+        QueueRead(harness, address);
+
+        GpuWrite(harness, address, 0x02020202);
+        SubmitBatch(harness);
+        Assert.Equal(0, harness.Cache.EagerReadbacksStarted);
+        QueueRead(harness, address);
+
         Assert.False(harness.Cache.HasGpuDirtyBytes(address, 0x100));
         Assert.Equal(0x02020202u, BitConverter.ToUInt32(harness.Read(address + 0x40, 4)));
         Detach(harness);

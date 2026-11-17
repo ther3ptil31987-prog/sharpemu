@@ -1,6 +1,8 @@
 // Copyright (C) 2026 SharpEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+using System.Runtime.CompilerServices;
+
 namespace SharpEmu.Libs.Gpu.GpuCommands.Registers;
 
 // The marker a preceding packet attaches to the next user scalar write.
@@ -11,29 +13,57 @@ public enum UserScalarKind : uint
     Region = 2,
 }
 
+[InlineArray(UserScalarRegisters.Capacity)]
+public struct UserScalarValues
+{
+    private uint _first;
+}
+
+[InlineArray(UserScalarRegisters.Capacity)]
+public struct UserScalarKinds
+{
+    private UserScalarKind _first;
+}
+
 public sealed class UserScalarRegisters
 {
     public const int Capacity = 32;
 
-    public uint[] Values = new uint[Capacity];
-    public UserScalarKind[] Kinds = new UserScalarKind[Capacity];
+    public UserScalarValues Values;
+    public UserScalarKinds Kinds;
     public uint Count;
 
-    public UserScalarRegisters Copy() => new()
-    {
-        Values = (uint[])Values.Clone(),
-        Kinds = (UserScalarKind[])Kinds.Clone(),
-        Count = Count,
-    };
+    public UserScalarRegisters Copy() => (UserScalarRegisters)MemberwiseClone();
+
+    public ReadOnlySpan<uint> ValueSpan(int count) => ((ReadOnlySpan<uint>)Values)[..count];
+
+    public ReadOnlySpan<UserScalarKind> KindSpan(int count) => ((ReadOnlySpan<UserScalarKind>)Kinds)[..count];
 
     public void Set(uint index, uint value, UserScalarKind kind)
     {
-        Values[index] = value;
-        Kinds[index] = kind;
+        Values[(int)index] = value;
+        Kinds[(int)index] = kind;
         if (index + 1 > Count)
         {
             Count = index + 1;
         }
+    }
+
+    public void SetRange(uint first, ReadOnlySpan<uint> values, UserScalarKind kind)
+    {
+        values.CopyTo(((Span<uint>)Values)[(int)first..]);
+        ((Span<UserScalarKind>)Kinds).Slice((int)first, values.Length).Fill(kind);
+        var end = first + (uint)values.Length;
+        if (!values.IsEmpty && end > Count)
+        {
+            Count = end;
+        }
+    }
+
+    public void CopyFrom(UserScalarRegisters source, int count)
+    {
+        source.ValueSpan(count).CopyTo(Values);
+        source.KindSpan(count).CopyTo(Kinds);
     }
 }
 
@@ -182,6 +212,7 @@ public sealed class VertexStageRegisters
     public ulong ExportAddress;
     public ulong LocalAddress;
     public ulong HullAddress;
+    public ulong HullUserDataAddress;
     public HullResource1 HullResource1;
     public HullResource2 HullResource2;
     public ulong GeometryAddress;
@@ -276,6 +307,13 @@ public sealed class ShaderProgramRegisters
 {
     // A bank holding the same stage objects, for a snapshot that shares them.
     public ShaderProgramRegisters ShareStages() => (ShaderProgramRegisters)MemberwiseClone();
+
+    public void ShareStagesOf(ShaderProgramRegisters source)
+    {
+        Vertex = source.Vertex;
+        Pixel = source.Pixel;
+        Compute = source.Compute;
+    }
 
     public VertexStageRegisters Vertex = new();
     public PixelStageRegisters Pixel = new();

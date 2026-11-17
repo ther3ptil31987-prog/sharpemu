@@ -61,15 +61,6 @@ public sealed class VideoOutOutputSupportTests
     }
 
     [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public void AutoHdrFollowsThePlatformPolicyButOnAlwaysOptsIn(bool autoAllowed)
-    {
-        Assert.Equal(autoAllowed, new HostVideoOptions { HdrMode = HostHdrMode.Auto }.CanUseHdr(true, true, autoAllowed));
-        Assert.True(new HostVideoOptions { HdrMode = HostHdrMode.On }.CanUseHdr(true, true, autoAllowed));
-    }
-
-    [Theory]
     [InlineData(HostHdrMode.Auto, false, true, false)]
     [InlineData(HostHdrMode.Auto, true, false, false)]
     [InlineData(HostHdrMode.Auto, true, true, true)]
@@ -80,7 +71,7 @@ public sealed class VideoOutOutputSupportTests
     public void OutputStatusReportsHdrOnlyWhenAllowedAndSupported(
         HostHdrMode mode, bool displayHdrEnabled, bool surfaceSupportsHdr, bool expectedHdr)
     {
-        var supported = new HostVideoOptions { HdrMode = mode }.CanUseHdr(displayHdrEnabled, surfaceSupportsHdr, autoAllowed: true);
+        var supported = new HostVideoOptions { HdrMode = mode }.CanUseHdr(displayHdrEnabled, surfaceSupportsHdr);
         Assert.Equal(expectedHdr, supported);
 
         var bytes = Enumerable.Repeat((byte)0xA5, 0x32).ToArray();
@@ -121,7 +112,8 @@ public sealed class VideoOutOutputSupportTests
             var expected = new byte[0x32];
             expected[0] = 0xA5;
             expected[^1] = 0xA5;
-            BinaryPrimitives.WriteUInt32LittleEndian(expected.AsSpan(1), 1);
+            // Before any buffers are registered a Gen5 port reports the UHD class, a Gen4 port the HD class.
+            BinaryPrimitives.WriteUInt32LittleEndian(expected.AsSpan(1), generation == Generation.Gen5 ? 2U : 1U);
             BinaryPrimitives.WriteUInt32LittleEndian(expected.AsSpan(5), 1);
             BinaryPrimitives.WriteUInt64LittleEndian(expected.AsSpan(9), 3);
             Assert.Equal(expected, buffer);

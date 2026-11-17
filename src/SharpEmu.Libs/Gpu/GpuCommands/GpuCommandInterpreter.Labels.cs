@@ -250,13 +250,24 @@ public sealed partial class GpuCommandInterpreter
 
     private void PublishLabel(in EndOfPipeWrite write, bool is64Bit)
     {
-        if (_host.TryDeferEndOfPipe(QueueId, in write))
+        var completion = write with { WaitForGpu = CompletionLabelsRequireGpu };
+        if (_host.TryDeferEndOfPipe(QueueId, in completion))
         {
             _lastWriteLength = 0;
+            // SHARPEMU_END_OF_PIPE_SOFT_WAITS: a deferred label replaces any earlier hint for its address.
+            Landings?.Forget(write.Destination);
             return;
         }
+        if (completion.WaitForGpu) _host.SynchronizeGpu();
         if (is64Bit) WriteQword(write.Destination, write.Value);
         else WriteDword(write.Destination, (uint)write.Value);
+        // SHARPEMU_END_OF_PIPE_SOFT_WAITS: the label is visible now; the host names the tick its release completes at.
+        if (Landings is { } landings && landings.Publish(QueueId, in write) is { } landing)
+        {
+            _host.RecordEndOfPipe(write with { Landing = landing });
+            return;
+        }
+
         _host.RecordEndOfPipe(in write);
     }
 
@@ -342,6 +353,7 @@ public sealed partial class GpuCommandInterpreter
         {
             if (eopEventType != 0x28 || gcrControl != 0)
             {
+                Diagnostics.DispatchRunTally.NoteSync();
                 _host.EmitGlobalBarrier();
             }
 
@@ -351,6 +363,7 @@ public sealed partial class GpuCommandInterpreter
 
         if (ReleaseMemGcrNeedsBarrier(eopEventType, gcrControl))
         {
+            Diagnostics.DispatchRunTally.NoteSync();
             _host.EmitGlobalBarrier();
         }
 
@@ -419,6 +432,7 @@ public sealed partial class GpuCommandInterpreter
             case 0x07:
             case 0x0F:
             case 0x10:
+                Diagnostics.DispatchRunTally.NoteSync();
                 _host.EmitGlobalBarrier();
                 break;
             case 0x16:
@@ -431,6 +445,7 @@ public sealed partial class GpuCommandInterpreter
                     throw _host.Fatal($"The event type is unknown: type=0x{eventType:X8} index=0x{eventIndex:X8}.");
                 }
 
+                Diagnostics.DispatchRunTally.NoteSync();
                 _host.EmitGlobalBarrier();
                 break;
             case 0x0D:
@@ -454,6 +469,7 @@ public sealed partial class GpuCommandInterpreter
                 _selectedOcclusionCounter = (int)counterId;
                 _occlusionDumpStrideBytes = 4u << (int)((eventAddress >> 9) & 0x3u);
                 _occlusionDumpInstanceMask = (uint)((eventAddress >> 11) & 0xFF_FFFFu);
+                Interlocked.Increment(ref _pixelPipeStatControls);
                 break;
             }
             case 0x3A:
@@ -468,6 +484,7 @@ public sealed partial class GpuCommandInterpreter
                 {
                     _occlusionCounterStart = resetCount;
                 }
+                Interlocked.Increment(ref _pixelPipeStatResets);
                 break;
             case 0x39:
             {
@@ -506,6 +523,7 @@ public sealed partial class GpuCommandInterpreter
                         _occlusionDumpInstanceMask, _occlusionDumpStrideBytes, _host.Memory as SharpEmu.HLE.IGuestBackedSpace, aggregate);
                 if (!aggregate)
                     _syntheticOcclusionCounters[_selectedOcclusionCounter] = (SyntheticOcclusionCounter + 1) & (readyBit - 1);
+                Interlocked.Increment(ref _occlusionWrites);
                 break;
             }
 

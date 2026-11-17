@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using SharpEmu.ShaderCompiler;
-using SharpEmu.ShaderCompiler.Metal;
 using SharpEmu.ShaderCompiler.Resources;
 using SharpEmu.ShaderCompiler.Vulkan;
 using Xunit;
@@ -42,7 +41,8 @@ public sealed class FlattenedReadReuseTests
     public void EquivalentReads_ShareHostReadsAndPreserveEveryDestination(uint components)
     {
         var program = RepeatedReadProgram(components);
-        var (plan, resources, layout) = Prepare(program, userDataCount: 9);
+        // The host-flattened table, independent of the process policy (SHARPEMU_GPU_SCALAR_DATA).
+        var (plan, resources, layout) = Prepare(program, userDataCount: 9, scalarDataOnDevice: false);
         var request = new ShaderCompileRequest(plan, resources, layout);
         Assert.Equal((int)components, plan.TableReads.Count);
         Assert.False(plan.Info.UsesDeviceAddresses);
@@ -69,20 +69,12 @@ public sealed class FlattenedReadReuseTests
     [InlineData(4u)]
     public void EquivalentReads_CompileWithoutDeviceAddressBindings(uint components)
     {
-        var request = Request(RepeatedReadProgram(components), userDataCount: 9);
+        // The host-flattened table, independent of the process policy (SHARPEMU_GPU_SCALAR_DATA).
+        var request = Request(RepeatedReadProgram(components), userDataCount: 9, scalarDataOnDevice: false);
         Assert.True(Gen5SpirvTranslator.TryCompileProgram(request, out var spirv, out var spirvError), spirvError);
         var module = new SpirvModuleInspector(spirv.Spirv);
         Assert.Equal(0u, module.AddressingModel);
         Assert.DoesNotContain(request.Bindings.Descriptors, descriptor => descriptor.Kind == DescriptorBindingKind.DeviceAddressPageTable);
-        Assert.True(Gen5MslTranslator.TryCompileProgram(request, out var metal, out var metalError), metalError);
-        var kernel = metal.Source[metal.Source.IndexOf("kernel void ", StringComparison.Ordinal)..];
-        Assert.DoesNotContain("sharpemu_load_device_dword", kernel);
-        for (uint component = 0; component < components; component++)
-        {
-            Assert.Contains($"s[{16 + component}] =", metal.Source);
-            Assert.Contains($"s[{32 + component}] =", metal.Source);
-            Assert.Equal(2, metal.Source.Split($".flattened_table[{component}u]").Length - 1);
-        }
     }
 
     [Fact]
@@ -93,8 +85,5 @@ public sealed class FlattenedReadReuseTests
         Assert.Empty(request.FlattenedSlotByMemoryIndex);
         Assert.Contains(request.Bindings.Descriptors, descriptor => descriptor.Kind == DescriptorBindingKind.DeviceAddressPageTable);
         Assert.True(Gen5SpirvTranslator.TryCompileProgram(request, out _, out var spirvError), spirvError);
-        Assert.True(Gen5MslTranslator.TryCompileProgram(request, out var metal, out var metalError), metalError);
-        var kernel = metal.Source[metal.Source.IndexOf("kernel void ", StringComparison.Ordinal)..];
-        Assert.Contains("sharpemu_load_device_dword", kernel);
     }
 }

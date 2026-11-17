@@ -1,6 +1,7 @@
 // Copyright (C) 2026 SharpEmu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+using SharpEmu.HLE.Diagnostics;
 using SharpEmu.Libs.Gpu.GpuCommands.Packets;
 
 namespace SharpEmu.Libs.Gpu.GpuCommands;
@@ -135,19 +136,44 @@ public sealed partial class GpuCommandInterpreter
         return 7;
     }
 
+    private const uint AcquireCbDbActionMask = (1u << 25) | (1u << 26);
+    private const uint AcquireGcrCacheActionMask = 0x3u | (1u << 4) | (1u << 5) | (1u << 6) | (1u << 7) | (1u << 8) | (1u << 9) |
+        (1u << 13) | (1u << 14) | (1u << 15);
+    private const uint AcquireCoherCacheActionMask = (1u << 3) | (1u << 4) | (1u << 5) | (1u << 15) | (1u << 18) | (1u << 22) |
+        (1u << 23) | AcquireCbDbActionMask | (1u << 27) | (1u << 28) | (1u << 29) | (1u << 30);
+
+    private static readonly ThreadCounter _acquireMemoryPackets = new();
+    private static readonly ThreadCounter _acquireMemoryBarriers = new();
+
+    public static string TakeAcquireMemoryReport() =>
+        FormattableString.Invariant($"acquire_mem={_acquireMemoryPackets.Take()}/{_acquireMemoryBarriers.Take()}");
+
     internal uint AcquireMemoryPacket(in PacketContext packet, ReadOnlySpan<uint> payload)
     {
         if (packet.Header == PacketHeader.Make(8, PacketOpcode.Nop, PacketCustomCode.AcquireMemory))
         {
+            AcquireMemory((payload[0] & AcquireCbDbActionMask) != 0 || (payload[6] & AcquireGcrCacheActionMask) != 0);
             return 7;
         }
 
         if (packet.Header == PacketHeader.Make(7, PacketOpcode.AcquireMemory))
         {
+            AcquireMemory((payload[0] & AcquireCoherCacheActionMask) != 0);
             return 6;
         }
 
         throw _host.Fatal($"The acquire-memory header is not supported: header=0x{packet.Header:X8} address=0x{packet.PacketAddress:X16}.");
+    }
+
+    private void AcquireMemory(bool cacheAction)
+    {
+        _acquireMemoryPackets.Increment();
+        if (cacheAction)
+        {
+            _acquireMemoryBarriers.Increment();
+            Diagnostics.DispatchRunTally.NoteSync();
+            _host.EmitGlobalBarrier();
+        }
     }
 
     internal uint NopPacket(in PacketContext packet, ReadOnlySpan<uint> payload)

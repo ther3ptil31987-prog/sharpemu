@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 using System.Buffers.Binary;
+using SharpEmu.ShaderCompiler.Resources;
 
 namespace SharpEmu.Libs.Gpu.Images;
 
@@ -31,6 +32,35 @@ public sealed class MipStatistics
         {
             _bindingsBySlot[texture.MipStatsSlot]++;
         }
+    }
+
+    public void NoteSampled(in TextureDescriptorWords texture, uint statistics)
+    {
+        if (statistics == ResourceSnapshot.NoMipStatistics)
+        {
+            NoteSampled(texture);
+        }
+        else if ((statistics & ResourceSnapshot.MipStatisticsEnabled) != 0 && !texture.IsNull)
+        {
+            _bindingsBySlot[statistics & ResourceSnapshot.MipStatisticsSlotWordMask]++;
+        }
+    }
+
+    public static uint ImageField(ReadOnlySpan<uint> texture, uint statistics)
+    {
+        if (statistics == ResourceSnapshot.NoMipStatistics)
+        {
+            return ImageField(texture);
+        }
+
+        if ((statistics & ResourceSnapshot.MipStatisticsEnabled) == 0)
+        {
+            return NoCounterField;
+        }
+
+        var baseLevel = (texture[3] >> 12) & 0xF;
+        var minLod = (texture[1] >> 8) & 0xFFF;
+        return (statistics & ResourceSnapshot.MipStatisticsSlotWordMask) | (baseLevel << 8) | (minLod << 16);
     }
 
     public static uint ImageField(ReadOnlySpan<uint> texture)

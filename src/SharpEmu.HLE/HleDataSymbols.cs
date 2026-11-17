@@ -24,6 +24,8 @@ public static class HleDataSymbols
     private static readonly nint _argumentVectorAddress = Allocate(nint.Size * 2);
     private static readonly nint _libcNeedFlagAddress = Allocate(sizeof(uint));
     private static readonly nint _libcInternalNeedFlagAddress = Allocate(sizeof(uint));
+    private static int _processArgumentCount;
+    private static ulong _processArgumentVector;
 
     static HleDataSymbols()
     {
@@ -57,10 +59,23 @@ public static class HleDataSymbols
     }
 
     public static int ProcessArgumentCount =>
+        Volatile.Read(ref _processArgumentVector) != 0 ? Volatile.Read(ref _processArgumentCount) :
         _progNameBufferAddress != 0 && _argumentVectorAddress != 0 ? 1 : 0;
 
-    public static ulong ProcessArgumentVectorAddress =>
-        unchecked((ulong)_argumentVectorAddress);
+    public static ulong ProcessArgumentVectorAddress
+    {
+        get
+        {
+            var address = Volatile.Read(ref _processArgumentVector);
+            return address != 0 ? address : unchecked((ulong)_argumentVectorAddress);
+        }
+    }
+
+    public static void ConfigureProcessArguments(int count, ulong vector)
+    {
+        Volatile.Write(ref _processArgumentCount, count);
+        Volatile.Write(ref _processArgumentVector, vector);
+    }
 
     public static void ConfigureProcessImageName(string? processImageName)
     {
@@ -72,6 +87,7 @@ public static class HleDataSymbols
 
         lock (_gate)
         {
+            ConfigureProcessArguments(0, 0);
             if (_progNameBufferAddress == 0 ||
                 _progNamePointerAddress == 0 ||
                 _argumentVectorAddress == 0)

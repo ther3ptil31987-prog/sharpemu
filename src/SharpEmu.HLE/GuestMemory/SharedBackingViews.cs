@@ -145,6 +145,36 @@ public sealed unsafe partial class SharedBackingViews : IDisposable
         }
     }
 
+    public bool TryCopySingleView(ulong destination, ulong source, ulong size)
+    {
+        if (size > int.MaxValue || !TryAccessSingleView(source, size, out var from))
+        {
+            return false;
+        }
+
+        try
+        {
+            if (!TryAccessSingleView(destination, size, out var to))
+            {
+                return false;
+            }
+
+            try
+            {
+                Buffer.MemoryCopy((void*)from, (void*)to, size, size);
+                return true;
+            }
+            finally
+            {
+                Interlocked.Decrement(ref _activeAccesses);
+            }
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _activeAccesses);
+        }
+    }
+
     public bool TryReadBacking(ulong address, Span<byte> data)
     {
         if (TryAccessSingleView(address, (ulong)data.Length, out var source))

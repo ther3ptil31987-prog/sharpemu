@@ -15,7 +15,7 @@ using System.Threading;
 
 namespace SharpEmu.Libs.Kernel;
 
-public static class KernelRuntimeCompatExports
+public static partial class KernelRuntimeCompatExports
 {
     private const ulong TlsErrnoOffset = 0x40;
     private const ulong TlsStackChkGuardBaseOffset = 0x800;
@@ -70,8 +70,8 @@ public static class KernelRuntimeCompatExports
     private static readonly bool _traceGuestThreads =
         string.Equals(Environment.GetEnvironmentVariable("SHARPEMU_LOG_GUEST_THREADS"), "1", StringComparison.Ordinal);
 
-    [ThreadStatic]
-    private static int _shortUsleepCount;
+    private const ulong UsleepStepMicroseconds = 10_000;
+    private const ulong UsleepSpinLimitMicroseconds = 50;
 
     private static readonly bool _stopwatchTicksAreNanoseconds =
         Stopwatch.Frequency == 1_000_000_000L;
@@ -104,31 +104,47 @@ public static class KernelRuntimeCompatExports
 
         GuestThreadExecution.Scheduler?.Pump(ctx, "sceKernelUsleep");
 
-        if (micros < 1000)
+        if (micros > UsleepSpinLimitMicroseconds)
         {
-            // Guest worker pools use usleep(1) as a polling backoff. Do not turn
-            // PS microsecond waits into Windows millisecond sleeps on hot paths.
-            if ((++_shortUsleepCount & 255) == 0)
+            micros = Audio.AudioOut2Exports.ProducerSleepMicroseconds(micros);
+        }
+
+        while (micros > 0)
+        {
+            var step = Math.Min(micros, UsleepStepMicroseconds);
+            if (step <= 1)
             {
-                Thread.Sleep(0);
+                if (!Thread.Yield())
+                {
+                    Thread.Sleep(0);
+                }
             }
             else
             {
-                Thread.Yield();
+                HostHighResolutionSleep.SleepMicroseconds(step);
             }
-        }
-        else
-        {
-            _shortUsleepCount = 0;
-            // Precise sleep: rounding microseconds up to Thread.Sleep
-            // milliseconds (which itself overshoots by a scheduler quantum)
-            // hard-caps games that pace their frame loop with usleep.
-            micros = Audio.AudioOut2Exports.ProducerSleepMicroseconds(micros);
-            HostTiming.SleepMicroseconds((long)Math.Min(micros, long.MaxValue));
+
+            micros -= step;
         }
 
         ctx[CpuRegister.Rax] = 0;
         return (int)OrbisGen2Result.ORBIS_GEN2_OK;
+    }
+
+    [SysAbiExport(Nid = "-ZR+hG7aDHw", ExportName = "sceKernelSleep",
+        Target = Generation.Gen4 | Generation.Gen5, LibraryName = "libKernel")]
+    public static int KernelSleep(CpuContext ctx)
+    {
+        var remaining = (ulong)(uint)ctx[CpuRegister.Rdi] * 1000;
+        if (remaining != 0)
+            GuestThreadExecution.Scheduler?.Pump(ctx, "sceKernelSleep");
+        while (remaining != 0)
+        {
+            var milliseconds = (int)Math.Min(remaining, int.MaxValue);
+            Thread.Sleep(milliseconds);
+            remaining -= (uint)milliseconds;
+        }
+        return ctx.SetReturn(0);
     }
 
     private static void TraceUsleepSpin(CpuContext ctx, ulong micros)
@@ -801,6 +817,7 @@ public static class KernelRuntimeCompatExports
             _prtApertures[apertureId] = (apertureBase, apertureSize);
         }
 
+        SharpEmu.HLE.GpuMemory.GuestGpuMemoryHook.NoteLazyRange(apertureId, apertureBase, apertureSize);
         Console.Error.WriteLine(
             $"[LOADER][TRACE] set_prt_aperture: id={apertureId} base=0x{apertureBase:X16} size=0x{apertureSize:X16}");
         if (string.Equals(Environment.GetEnvironmentVariable("SHARPEMU_LOG_ALLOC_IMPORTS"), "1", StringComparison.Ordinal))
@@ -816,6 +833,8 @@ public static class KernelRuntimeCompatExports
     {
         if (size == 0 || address > ulong.MaxValue - size)
             return false;
+        if (Ampr.AmprExports.ContainsAmmRange(address, size))
+            return true;
         lock (_prtApertureGate)
         {
             return _prtApertures.Any(aperture => address >= aperture.Base &&
@@ -1821,8 +1840,8 @@ public static class KernelRuntimeCompatExports
     // (currently 64-bit Windows); otherwise it falls back to the QPC-based Stopwatch. The
     // calibrated and CPUID frequencies both describe RDTSC, so reporting either while ReadTsc is
     // actually returning Stopwatch ticks makes sceKernelGetTscFrequency disagree with the counter,
-    // and a guest computing elapsed = readTscDelta / frequency gets the wrong time on Linux and
-    // macOS. Gate those on rdtscAvailable; otherwise report Stopwatch's own frequency so the pair
+    // and a guest computing elapsed = readTscDelta / frequency gets the wrong time on Linux. Gate
+    // those on rdtscAvailable; otherwise report Stopwatch's own frequency so the pair
     // stays consistent.
     internal static (ulong FrequencyHz, string Source) SelectKernelTscFrequency(
         bool rdtscAvailable,
