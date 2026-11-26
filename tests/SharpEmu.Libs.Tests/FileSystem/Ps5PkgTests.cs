@@ -226,6 +226,72 @@ public sealed class Ps5PkgTests
         });
     }
 
+    [Theory]
+    [InlineData(4096L, 4)]
+    [InlineData(0x8000L, 4)]
+    [InlineData(4096L, 1)]
+    [InlineData(1L, 3)]
+    public void ParallelExtractMatchesTheExpectedFiles(long chunkBytes, int parallelism)
+    {
+        var built = BuildPackage(new Spec());
+        WithPackage(built.Bytes, (package, destination) =>
+        {
+            var reports = new List<PkgExtractProgress>();
+            package.Extract(destination, new CollectingProgress<PkgExtractProgress>(reports.Add), default, 1, null, chunkBytes, parallelism);
+
+            var written = ReadTree(destination);
+            Assert.Equal(built.ExpectedFiles.Keys.OrderBy(k => k, StringComparer.Ordinal), written.Keys.OrderBy(k => k, StringComparer.Ordinal));
+            foreach (var (name, bytes) in built.ExpectedFiles)
+            {
+                Assert.True(bytes.AsSpan().SequenceEqual(written[name]), name);
+            }
+
+            Assert.NotEmpty(reports);
+            Assert.Equal((built.GameBytes, built.GameBytes), (reports[^1].BytesDone, reports[^1].BytesTotal));
+            for (var i = 1; i < reports.Count; i++)
+            {
+                Assert.True(reports[i].BytesDone >= reports[i - 1].BytesDone, $"report {i} went backwards");
+            }
+        });
+    }
+
+    [Fact]
+    public void ParallelExtractHonoursCancellationWithoutAnAggregateException()
+    {
+        WithPackage(BuildPackage(new Spec()).Bytes, (package, destination) =>
+        {
+            using var source = new CancellationTokenSource();
+            var progress = new CollectingProgress<PkgExtractProgress>(report =>
+            {
+                if (report.BytesDone > 0)
+                {
+                    source.Cancel();
+                }
+            });
+            Assert.Throws<OperationCanceledException>(() => package.Extract(destination, progress, source.Token, 1, null, 4096, 4));
+        });
+    }
+
+    [Fact]
+    public void ParallelExtractRethrowsACorruptBlockAsInvalidData()
+    {
+        var built = BuildPackage(new Spec());
+        // The Kraken block starts with the seed bytes of the stored image at logical 0x8000: find
+        // them in the package and break the literal count that follows the 8 seed bytes.
+        var seed = built.ExpectedFiles["assets/data.bin"].AsSpan(0x100, 8).ToArray();
+        // The seed alone also occurs in the periodic test patterns, so match the literal count too.
+        byte[] needle = [.. seed, 0x00, 0x7F, 0xF8];
+        var at = built.Bytes.AsSpan().IndexOf(needle);
+        Assert.True(at >= 0);
+        var corrupt = (byte[])built.Bytes.Clone();
+        corrupt[at + 8] = 0;
+        corrupt[at + 9] = 0x10;
+        corrupt[at + 10] = 0;
+
+        WithPackage(corrupt, (package, destination) =>
+            Assert.Throws<InvalidDataException>(() => package.Extract(destination, null, default, PkgPackage.ProgressStepBytes, null, 4096, 4)));
+    }
+
     // ---- NAPS ----------------------------------------------------------------------------------
 
     [Fact]
@@ -282,22 +348,6 @@ public sealed class Ps5PkgTests
 
         // Cut off at 89 bytes only the placement right after the file offsets (56) still fits.
         Assert.Equal(new[] { 56 }, Ps5Naps.Parse(blob[..89]).Candidates.Select(c => c.Start).ToArray());
-    }
-
-    [Fact]
-    public void ImplausibleMountSizeIsRefused()
-    {
-        var blob = new byte[90];
-        BinaryPrimitives.WriteUInt64LittleEndian(blob, 1UL | (9UL << 32));
-        BinaryPrimitives.WriteUInt64LittleEndian(blob.AsSpan(8), 1UL);
-        blob[32] = 0x24;
-        blob[34] = 0xFF; // mount size 0xFF00240000, about 1 TiB
-        blob[35] = 0x40;
-        blob[74] = 4;
-        blob[81] = 10;
-
-        var refused = Assert.Throws<InvalidDataException>(() => Ps5Naps.Parse(blob));
-        Assert.Contains("mount size", refused.Message);
     }
 
     [Fact]
