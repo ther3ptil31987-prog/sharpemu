@@ -15,12 +15,21 @@ public static class GuestImageFormat
     public const uint Format32Sint = 21;
     public const uint Format32Float = 22;
     public const uint Format32x2Uint = 62;
+    public const uint Format32x2Sint = 63;
+    public const uint Format32x2Float = 64;
 
     // Only these sample as a Vulkan depth format; comparison sampling of any
     // other format is evaluated in the shader.
     public static bool HasDepthEquivalent(uint format) => format is Format16Unorm or Format32Float;
     public const uint Format11x2x10Uint = 34;
+    public const uint Format5x6x5Unorm = 133;
+    public const uint Format5x3x1Unorm = 134;
+    public const uint Format4x4Unorm = 136;
     public const uint MaxFormat = 182;
+
+    public static bool IsPacked16Unorm(uint format) => format is Format5x6x5Unorm or Format5x3x1Unorm or Format4x4Unorm;
+
+    public static bool IsAtomic64Format(uint format) => format is Format32x2Uint or Format32x2Sint or Format32x2Float;
 
     public const uint ImageType1D = 8;
     public const uint ImageType2D = 9;

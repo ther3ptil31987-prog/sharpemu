@@ -59,6 +59,7 @@ internal sealed class PresenterUnderTest : IDisposable
         SetField("_supportsShaderClipDistance", vulkan.SupportsClipDistance);
         SetField("_supportsTessellation", vulkan.SupportsTessellation);
         SetField("_deviceInfo", vulkan.DeviceInfo);
+        SetField("_nullDescriptorEnabled", vulkan.SupportsNullDescriptor);
         SetField("_scheduler", Harness.Scheduler);
         SetField("_guestPublications", new PendingGuestPublications());
         Harness.Cache.CompleteGuestPublications = (address, size, access) =>
@@ -169,6 +170,7 @@ internal sealed class PresenterUnderTest : IDisposable
                 }
 
                 InvokeMethod("WaitForAllGuestSubmissions");
+                GetField<SliceArenaPool?>("_arenaPool")?.Dispose();
                 GetField<SharpEmu.Libs.Gpu.Vulkan.VulkanOcclusionQueries?>("_occlusionQueries")?.Dispose();
                 DestroyPipelineResources();
                 Samplers.Dispose();
